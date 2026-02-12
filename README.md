@@ -4,10 +4,16 @@
 [![License: Proprietary](https://img.shields.io/badge/License-Proprietary-red.svg)](LICENSE)
 [![MCP Compatible](https://img.shields.io/badge/MCP-Compatible-purple.svg)](https://modelcontextprotocol.io/)
 [![PyPI](https://img.shields.io/pypi/v/civyk-repoix.svg)](https://pypi.org/project/civyk-repoix/)
+[![Sigstore](https://img.shields.io/badge/Sigstore-signed-blue.svg)](https://sigstore.dev/)
+[![SLSA 3](https://slsa.dev/images/gh-badge-level3.svg)](https://slsa.dev)
 
 **Semantic code intelligence for AI coding agents** — Give your AI assistant deep understanding of your codebase through the Model Context Protocol (MCP).
 
 > **If you find this useful, please consider [supporting the project](#support)!**
+
+[![Watch the Demo](https://img.youtube.com/vi/B4aq3cj_Pq8/maxresdefault.jpg)](https://www.youtube.com/watch?v=B4aq3cj_Pq8)
+
+**Watch:** [What is Civyk Repo Index, why use it, and how to set it up](https://www.youtube.com/watch?v=B4aq3cj_Pq8)
 
 ______________________________________________________________________
 
@@ -49,20 +55,20 @@ pip install civyk-repoix
 ```bash
 cd /path/to/your/project
 
-# Interactive setup (recommended)
-civyk-repoix setup
+# Interactive init (recommended)
+civyk-repoix init
 
 # Or configure specific agent
-civyk-repoix setup --ai claude        # Claude Code
-civyk-repoix setup --ai cursor-agent  # Cursor
-civyk-repoix setup --ai windsurf      # Windsurf
-civyk-repoix setup --ai copilot       # GitHub Copilot
-civyk-repoix setup --ai opencode      # OpenCode
-civyk-repoix setup --ai kilocode      # Kilo Code
-civyk-repoix setup --ai antigravity   # Antigravity
+civyk-repoix init --ai claude        # Claude Code
+civyk-repoix init --ai cursor-agent  # Cursor
+civyk-repoix init --ai windsurf      # Windsurf
+civyk-repoix init --ai copilot       # GitHub Copilot
+civyk-repoix init --ai opencode      # OpenCode
+civyk-repoix init --ai kilocode      # Kilo Code
+civyk-repoix init --ai antigravity   # Antigravity
 
 # Configure all supported agents at once
-civyk-repoix setup --all
+civyk-repoix init --all
 ```
 
 ### Verify
@@ -75,7 +81,7 @@ ______________________________________________________________________
 
 ## MCP Tools
 
-36 tools for code intelligence.
+42 tools for code intelligence.
 
 | Category | Tools |
 |----------|-------|
@@ -87,6 +93,7 @@ ______________________________________________________________________
 | **Advanced** | `get_type_hierarchy`, `get_related_files`, `find_similar` |
 | **AI Cache** | `store_understanding`, `recall_understanding`, `get_understanding_stats`, `invalidate_understanding` |
 | **Context** | `build_delta_context_pack`, `map_trace_to_symbols`, `get_recommended_tests`, `build_doc_pack` |
+| **Conversation** | `list_conversation_sessions`, `get_conversation_history`, `build_conversation_context`, `log_conversation_turn`, `finalize_conversation_session`, `search_conversations` |
 
 > **Tip:** Use `recall_understanding` before reading files — cached analysis saves 80-90% of tokens.
 
@@ -135,6 +142,76 @@ Wednesday: You modify auth.py → cache auto-invalidates → AI re-analyzes
 
 ______________________________________________________________________
 
+## Conversation History — Context Across Sessions
+
+**Your AI assistant remembers conversation context across sessions and compactions.**
+
+When Claude Code or other AI agents hit context limits, they compact conversations — losing valuable context. With Civyk Repo Index's Conversation History, your discussions persist:
+
+```text
+Session 1:  AI discusses auth refactor → conversation logged
+[Compaction happens]
+Session 2:  AI calls build_conversation_context → restores key decisions and goals
+```
+
+### Conversation Tools
+
+| Tool | Purpose |
+|------|---------|
+| `list_conversation_sessions` | Find recent sessions to restore context |
+| `get_conversation_history` | Retrieve turns from a specific session |
+| `build_conversation_context` | Build token-budgeted context from session history |
+| `search_conversations` | Full-text search across all past conversations |
+
+> **Hook Integration**: Conversation logging integrates with Claude Code hooks to automatically capture prompts and tool usage.
+
+______________________________________________________________________
+
+## AI Cache Hooks — Deterministic Cache Behavior
+
+**AI agents don't need explicit instructions — hooks enforce cache operations automatically.**
+
+Traditional approaches rely on AI following documentation, which is unreliable. Civyk Repo Index hooks ensure deterministic behavior:
+
+```text
+┌─────────────────────────────────────────────────────────────────┐
+│ SessionStart Hook                                               │
+│   → Loads cache stats, shows available entries                  │
+├─────────────────────────────────────────────────────────────────┤
+│ PreToolUse:Read Hook                                            │
+│   → Checks cache BEFORE file read                               │
+│   → Injects cached understanding if available                   │
+├─────────────────────────────────────────────────────────────────┤
+│ PostToolUse:Read Hook                                           │
+│   → Reminds AI to store_understanding after analysis            │
+├─────────────────────────────────────────────────────────────────┤
+│ Stop Hook                                                       │
+│   → Persists unsaved learnings before session ends              │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Supported Agents
+
+| Agent | MCP | Hooks | Config Location |
+|-------|-----|-------|-----------------|
+| Claude Code | Yes | Yes | `.claude/settings.json` |
+| Cursor | Yes | Yes | `.cursor/hooks.json` |
+| Windsurf | Yes | Yes | `.windsurf/hooks.json` |
+| GitHub Copilot | Yes | Yes | `.github/hooks/` |
+
+### Setup
+
+Hooks are configured automatically during setup:
+
+```bash
+civyk-repoix init              # Configures MCP + hooks
+civyk-repoix init --no-hooks   # Skip hook configuration
+```
+
+> **No prompt engineering required**: Hooks inject cache context and reminders programmatically, so AI agents use the cache without explicit instructions.
+
+______________________________________________________________________
+
 ## Language Support
 
 | Tier | Languages |
@@ -148,7 +225,7 @@ ______________________________________________________________________
 
 ## Architecture
 
-Daemon-based architecture for multi-repository support.
+Daemon-based architecture for multi-repository support with **dual interface** — MCP protocol for AI agents or CLI for direct use.
 
 ```mermaid
 graph LR
@@ -161,18 +238,31 @@ graph LR
 - **Repository Worker** — One per repo, handles indexing and queries
 - **Indexer** — Tree-sitter parsing, symbol extraction
 - **Context Builder** — Token-budgeted context generation
+- **Conversation Manager** — Session tracking and history persistence
+
+### Dual Interface
+
+| Mode | Usage | Interface |
+|------|-------|-----------|
+| **MCP** | AI agents (Claude, Cursor, etc.) | JSON-RPC over stdio |
+| **CLI** | Direct terminal use, scripts | `civyk-repoix query <tool>` |
+
+Both interfaces use the same underlying daemon and tool implementations — identical functionality, different access methods.
 
 ______________________________________________________________________
 
 ## CLI Mode
 
-Use without MCP protocol:
+Use tools directly without MCP protocol:
 
 ```bash
 civyk-repoix query search-symbols --query "%User%" --kind class
 civyk-repoix query build-context-pack --task "implement auth" --token-budget 1000
+civyk-repoix query list-conversation-sessions --days 7  # View recent sessions
 civyk-repoix query --schema  # Get JSON schema of all tools
 ```
+
+**Tool Name Mapping:** MCP uses `snake_case` (e.g., `search_symbols`), CLI uses `kebab-case` (e.g., `search-symbols`).
 
 ______________________________________________________________________
 
@@ -254,6 +344,30 @@ If Civyk Repo Index has helped your development workflow, consider supporting it
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-Support-blue.svg)](https://ko-fi.com/civyk)
 
 > Every contribution, no matter the size, makes a difference.
+
+______________________________________________________________________
+
+## Security
+
+All releases are cryptographically signed and include supply chain provenance.
+
+### Verify Package Signatures
+
+```bash
+pip install sigstore
+sigstore verify identity \
+  --cert-oidc-issuer https://token.actions.githubusercontent.com \
+  civyk_repoix-*.whl
+```
+
+### Security Features
+
+- **Sigstore signing** on all releases
+- **SLSA provenance** for supply chain security
+- **OpenSSF Scorecard** for security best practices
+- **100% local operation** - your code never leaves your machine
+
+See [SECURITY.md](SECURITY.md) for our full security policy and vulnerability reporting.
 
 ______________________________________________________________________
 
