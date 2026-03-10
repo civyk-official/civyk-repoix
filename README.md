@@ -39,6 +39,8 @@ AI coding assistants have **limited context windows**. They can't read entire co
 - **Multi-language** — Python, TypeScript, JavaScript, Java, Go, C#, Rust, Ruby, PHP
 - **Branch-aware** — Separate indexes per git branch
 - **AI Context Cache** — Persist code understanding across sessions, save 80-90% tokens
+- **Semantic Search** — Vector embedding-based search across understanding cache
+- **Tiered Tool Profiles** — Core/extended/specialist tiers for right-sized tool surface
 
 ______________________________________________________________________
 
@@ -48,6 +50,9 @@ ______________________________________________________________________
 
 ```bash
 pip install civyk-repoix
+
+# Optional: enable semantic search with vector embeddings
+pip install civyk-repoix[embeddings]
 ```
 
 ### Setup for Your AI Agent
@@ -74,28 +79,33 @@ civyk-repoix init --all
 ### Verify
 
 ```bash
-civyk-repoix query index-status
+civyk-repoix query status --action check
 ```
 
 ______________________________________________________________________
 
 ## MCP Tools
 
-42 tools for code intelligence.
+14 consolidated tools for code intelligence. Each tool supports multiple actions via an `action` parameter.
 
-| Category | Tools |
-|----------|-------|
-| **Core** | `index_status`, `build_context_pack`, `search_symbols`, `get_symbol`, `get_references`, `get_components`, `get_api_endpoints`, `get_dependencies`, `force_reindex` |
-| **Navigation** | `get_file_symbols`, `get_definition`, `get_callers` |
-| **Discovery** | `list_files`, `get_file_imports`, `search_code` |
-| **Git** | `get_recent_changes`, `get_hotspots`, `get_branch_diff` |
-| **Analysis** | `get_dead_code`, `find_circular_dependencies`, `analyze_impact`, `get_tests_for`, `get_code_for_test`, `get_duplicate_code`, `get_tool_performance_stats` |
-| **Advanced** | `get_type_hierarchy`, `get_related_files`, `find_similar` |
-| **AI Cache** | `store_understanding`, `recall_understanding`, `get_understanding_stats`, `invalidate_understanding` |
-| **Context** | `build_delta_context_pack`, `map_trace_to_symbols`, `get_recommended_tests`, `build_doc_pack` |
-| **Conversation** | `list_conversation_sessions`, `get_conversation_history`, `build_conversation_context`, `log_conversation_turn`, `finalize_conversation_session`, `search_conversations` |
+| Tier | Tool | Actions | Purpose |
+|------|------|---------|---------|
+| **Core** | `status` | `check`, `reindex`, `perf_stats` | Index health, re-indexing, performance stats |
+| **Core** | `search` | `symbols`, `code`, `definition` | Find symbols, text patterns, and definitions |
+| **Core** | `symbol` | `detail`, `references`, `callers`, `hierarchy`, `similar` | Symbol details, usage sites, call graphs, type hierarchy, similar symbols |
+| **Core** | `file` | `symbols`, `imports`, `related` | Per-file symbol listing, import analysis, related files |
+| **Core** | `files` | — | List/filter repository files |
+| **Core** | `git` | `changes`, `hotspots`, `diff` | Recent changes, churn hotspots, branch diffs |
+| **Core** | `understand` | `store`, `recall`, `stats`, `invalidate` | AI context cache — persist and recall understanding |
+| **Core** | `explore` | — | Multi-strategy deep-dive in one call |
+| **Core** | `remember` | — | Cross-session key-value memory |
+| **Extended** | `architecture` | `components`, `dependencies`, `endpoints` | Module graph, dependency analysis, API endpoints |
+| **Extended** | `quality` | `dead_code`, `duplicates`, `circular_deps`, `impact` | Code health and impact analysis |
+| **Extended** | `context` | `task`, `delta`, `docs`, `trace` | Token-budgeted context packs |
+| **Extended** | `tests` | `recommended`, `for_file`, `code_for_test` | Test discovery and mapping |
+| **Specialist** | `conversation` | `list`, `history`, `search`, `context`, `log`, `finalize` | Conversation history across sessions |
 
-> **Tip:** Use `recall_understanding` before reading files — cached analysis saves 80-90% of tokens.
+> **Tip:** Use `understand(action="recall")` before reading files — cached analysis saves 80-90% of tokens.
 
 ______________________________________________________________________
 
@@ -122,8 +132,8 @@ Wednesday: You modify auth.py → cache auto-invalidates → AI re-analyzes
 
 ### How It Works
 
-1. **First encounter**: AI reads a file, analyzes it, calls `store_understanding`
-1. **Future sessions**: AI calls `recall_understanding` first — gets cached analysis
+1. **First encounter**: AI reads a file, analyzes it, calls `understand(action="store")`
+1. **Future sessions**: AI calls `understand(action="recall")` first — gets cached analysis
 1. **File changes**: Cache auto-invalidates via content hash — AI re-analyzes
 1. **Per-repository**: Each repo has its own persistent cache
 
@@ -131,12 +141,12 @@ Wednesday: You modify auth.py → cache auto-invalidates → AI re-analyzes
 
 | Tool | Purpose |
 |------|---------|
-| `recall_understanding` | **Call FIRST** before reading any file — retrieves cached analysis |
-| `store_understanding` | Persist AI's analyzed understanding after reading files |
-| `get_understanding_stats` | **Session start**: List cached targets, filter by path/scope, sort, check freshness |
-| `invalidate_understanding` | Manually clear cached entries when needed |
+| `understand(action="recall")` | **Call FIRST** before reading any file — retrieves cached analysis |
+| `understand(action="store")` | Persist AI's analyzed understanding after reading files |
+| `understand(action="stats")` | **Session start**: List cached targets, filter by path/scope, sort, check freshness |
+| `understand(action="invalidate")` | Manually clear cached entries when needed |
 
-`store_understanding` supports structured fields (purpose, key_points, gotchas) plus a free-form `analysis` field for complex business logic, state machines, and workflows.
+`understand(action="store")` supports structured fields (purpose, key_points, gotchas) plus a free-form `analysis` field for complex business logic, state machines, and workflows.
 
 > **Pro tip**: The AI Context Cache is stored locally in SQLite alongside your code index. Your analysis never leaves your machine.
 
@@ -151,17 +161,17 @@ When Claude Code or other AI agents hit context limits, they compact conversatio
 ```text
 Session 1:  AI discusses auth refactor → conversation logged
 [Compaction happens]
-Session 2:  AI calls build_conversation_context → restores key decisions and goals
+Session 2:  AI calls conversation(action="context") → restores key decisions and goals
 ```
 
 ### Conversation Tools
 
 | Tool | Purpose |
 |------|---------|
-| `list_conversation_sessions` | Find recent sessions to restore context |
-| `get_conversation_history` | Retrieve turns from a specific session |
-| `build_conversation_context` | Build token-budgeted context from session history |
-| `search_conversations` | Full-text search across all past conversations |
+| `conversation(action="list")` | Find recent sessions to restore context |
+| `conversation(action="history")` | Retrieve turns from a specific session |
+| `conversation(action="context")` | Build token-budgeted context from session history |
+| `conversation(action="search")` | Full-text search across all past conversations |
 
 > **Hook Integration**: Conversation logging integrates with Claude Code hooks to automatically capture prompts and tool usage.
 
@@ -183,7 +193,7 @@ Traditional approaches rely on AI following documentation, which is unreliable. 
 │   → Injects cached understanding if available                   │
 ├─────────────────────────────────────────────────────────────────┤
 │ PostToolUse:Read Hook                                           │
-│   → Reminds AI to store_understanding after analysis            │
+│   → Reminds AI to understand(action='store') after analysis     │
 ├─────────────────────────────────────────────────────────────────┤
 │ Stop Hook                                                       │
 │   → Persists unsaved learnings before session ends              │
@@ -238,7 +248,9 @@ graph LR
 - **Repository Worker** — One per repo, handles indexing and queries
 - **Indexer** — Tree-sitter parsing, symbol extraction
 - **Context Builder** — Token-budgeted context generation
+- **Embedding Engine** — Vector embeddings with 3-backend fallback (sentence-transformers, API, TF-IDF)
 - **Conversation Manager** — Session tracking and history persistence
+- **Tool Health Tracker** — Auto-disables failing tools, re-enables after cooldown
 
 ### Dual Interface
 
@@ -256,13 +268,13 @@ ______________________________________________________________________
 Use tools directly without MCP protocol:
 
 ```bash
-civyk-repoix query search-symbols --query "%User%" --kind class
-civyk-repoix query build-context-pack --task "implement auth" --token-budget 1000
-civyk-repoix query list-conversation-sessions --days 7  # View recent sessions
+civyk-repoix query search --action symbols --query "%User%" --kind class
+civyk-repoix query context --action task --task "implement auth" --token-budget 1000
+civyk-repoix query conversation --action list --days 7  # View recent sessions
 civyk-repoix query --schema  # Get JSON schema of all tools
 ```
 
-**Tool Name Mapping:** MCP uses `snake_case` (e.g., `search_symbols`), CLI uses `kebab-case` (e.g., `search-symbols`).
+**Tool Name Mapping:** MCP uses `snake_case` (e.g., `search`), CLI uses `kebab-case` (e.g., `search`). Actions are passed via `--action`.
 
 ______________________________________________________________________
 
@@ -296,32 +308,32 @@ ______________________________________________________________________
 
 ## Performance
 
-Benchmarked on Windows 11 Pro, Python 3.13, AMD Ryzen processor with a codebase of **152 files** and **6,443 symbols**.
+Benchmarked on Windows 11 Pro, Python 3.13, AMD Ryzen processor with a codebase of **178 files** and **7,677 symbols**.
 
 ### Tool Performance
 
 | Tool | Avg Latency | Throughput | Category |
 |------|-------------|------------|----------|
-| `index_status` | 0.5ms | 3,700+ req/s | Fast |
-| `get_symbol` | 0.6ms | 3,600+ req/s | Fast |
-| `get_definition` | 0.6ms | 3,400+ req/s | Fast |
-| `list_files` | 0.7ms | 3,100+ req/s | Fast |
-| `get_file_symbols` | 0.8ms | 2,800+ req/s | Fast |
-| `search_symbols` | 1.8ms | 600+ req/s | Medium |
-| `get_callers` | 2.2ms | 500+ req/s | Medium |
-| `get_references` | 2.5ms | 450+ req/s | Medium |
-| `search_code` | 4ms | 280+ req/s | Medium |
-| `get_components` | 2ms | 550+ req/s | Medium |
-| `build_context_pack` | 16ms | 60+ req/s | Compute |
-| `analyze_impact` | 35ms | 30+ req/s | Compute |
-| `get_dead_code` | 45ms | 25+ req/s | Compute |
-| `find_similar` | 90ms | 12+ req/s | Compute |
+| `status --action check` | 0.5ms | 3,700+ req/s | Fast |
+| `symbol --action detail` | 0.6ms | 3,600+ req/s | Fast |
+| `search --action definition` | 0.6ms | 3,400+ req/s | Fast |
+| `files` | 0.7ms | 3,100+ req/s | Fast |
+| `file --action symbols` | 0.8ms | 2,800+ req/s | Fast |
+| `search --action symbols` | 1.8ms | 600+ req/s | Medium |
+| `symbol --action callers` | 2.2ms | 500+ req/s | Medium |
+| `symbol --action references` | 2.5ms | 450+ req/s | Medium |
+| `search --action code` | 4ms | 280+ req/s | Medium |
+| `architecture --action components` | 2ms | 550+ req/s | Medium |
+| `context --action task` | 16ms | 60+ req/s | Compute |
+| `quality --action impact` | 35ms | 30+ req/s | Compute |
+| `quality --action dead_code` | 45ms | 25+ req/s | Compute |
+| `symbol --action similar` | 90ms | 12+ req/s | Compute |
 
 ### Index Performance
 
 | Operation | Performance |
 |-----------|-------------|
-| Full index (152 files) | ~3 seconds |
+| Full index (178 files) | ~3 seconds |
 | Delta index | < 500ms |
 | Symbol search | < 2ms |
 | Context pack build | < 20ms |
