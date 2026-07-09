@@ -11,6 +11,10 @@
 
 > **If you find this useful, please consider [supporting the project](#support)!**
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/civyk-official/civyk-repoix/main/assets/civyk-repoix-hero.png" alt="Civyk Repo Index — Semantic Code Intelligence, Local &amp; Private" width="100%">
+</p>
+
 [![Watch the Demo](https://img.youtube.com/vi/B4aq3cj_Pq8/maxresdefault.jpg)](https://www.youtube.com/watch?v=B4aq3cj_Pq8)
 
 **Watch:** [What is Civyk Repo Index, why use it, and how to set it up](https://www.youtube.com/watch?v=B4aq3cj_Pq8)
