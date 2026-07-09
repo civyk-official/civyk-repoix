@@ -48,15 +48,32 @@ ______________________________________________________________________
 
 ### Installation
 
+All extras are optional — the base install is fully functional on its own. Pick the combination for the capabilities you want:
+
 ```bash
+# 1) Base — indexing, symbol/semantic search, AI cache, MCP tools.
+#    Semantic search uses a lightweight lexical fallback (TF-IDF); no LLM features.
 pip install civyk-repoix
 
-# Optional: enable semantic search with vector embeddings
-pip install civyk-repoix[embeddings]
+# 2) With embeddings — local vector semantic search (sentence-transformers, offline, free)
+pip install "civyk-repoix[embeddings]"
 
-# Optional: enable deep-wiki generation and Q&A (OpenAI-compatible LLMs, e.g. Minimax)
-pip install civyk-repoix[llm]
+# 3) With LLM — deep-wiki generation & Q&A via an OpenAI-compatible API (OpenAI, Minimax, …).
+#    (GitHub Copilot needs no extra — it uses your editor's Copilot sign-in, no SDK.)
+pip install "civyk-repoix[llm]"
+
+# 4) With both (recommended for deep-wiki) — semantic retrieval + LLM generation
+pip install "civyk-repoix[embeddings,llm]"   # or the shorthand: civyk-repoix[all]
 ```
+
+| Install | Adds | Enables |
+|---------|------|---------|
+| `civyk-repoix` | — | Indexing, symbol search, TF-IDF semantic search, AI cache, all MCP tools |
+| `civyk-repoix[embeddings]` | sentence-transformers, numpy | Local **vector** semantic search + wiki RAG retrieval |
+| `civyk-repoix[llm]` | openai | **Deep-wiki** generation + `ask` via OpenAI-compatible APIs |
+| `civyk-repoix[all]` | both of the above | Full feature set — best deep-wiki quality (RAG + LLM) |
+
+> **Deep-wiki is opt-in.** After installing `[llm]` (or configuring GitHub Copilot), enable it with `wiki.enabled: true` and a `generation` provider. See [Deep Wiki](#deep-wiki--auto-generated-docs-your-agent-can-query).
 
 ### Setup for Your AI Agent
 
@@ -192,8 +209,9 @@ identical system prefix across all pages so providers can serve it from their pr
 - **Ask the wiki:** `wiki(action="ask", query="how does auth work", mode="answer")` — `rag`
   (sections + citations, no LLM cost), `answer` (LLM-synthesized), or `deep` (multi-step research).
 - **Intelligent (re)generation:** triggered by a **changed-file threshold** and/or a **schedule** —
-  never on every save — and **off by default** until a provider is configured. Incremental: only
-  pages whose sources changed are rebuilt.
+  never on every save. **Opt-in** — deep-wiki is off by default; set `wiki.enabled: true` **and**
+  configure a `generation` provider to turn it on. Incremental: only pages whose sources changed
+  are rebuilt.
 - **Graceful degradation:** with no LLM configured it still produces structural pages + deterministic
   diagrams, and `ask` returns retrieval-only results.
 
@@ -459,7 +477,7 @@ generation:
   embedding_model: ""   # optional; enables the "openai" embedding backend
 
 wiki:
-  enabled: true               # deep-wiki on by default (still needs a configured LLM to generate)
+  enabled: false              # opt-in: set true AND configure `generation` above to build the wiki
   branches: []                # empty => default branch (main/master) only
   default_branch_only: true   # lock ALL wiki gen to the default branch; ignores `branches` when on
   view: comprehensive         # comprehensive (8-12 pages) or concise (4-6)

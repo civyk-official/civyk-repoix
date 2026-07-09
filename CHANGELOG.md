@@ -5,7 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.8.0] - 2026-06-28
+
+### Security
+
+- **Public-distribution hardening: Nuitka build artifacts can never leak into the repo or sdist.**
+  `cli.build/`, `*.build/`, and `*.dist/` are now gitignored, and `MANIFEST.in` prunes
+  `src/civyk_repoix/cli.build`/`cli.dist` and excludes `scons-*.py`. Nuitka's scons scaffolding can
+  embed the build environment (env vars), so this keeps it out of both `git` and source
+  distributions. (Released wheels are Nuitka-compiled and were already unaffected.)
 
 ### Fixed
 
@@ -117,8 +125,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   available premium-request quota; when unavailable Copilot returns `model_not_supported` and the
   wiki degrades to structural pages. Set `generation.model: claude-haiku-4.5` for an always-available,
   fast default.
-- **Deep-wiki is enabled by default** (`wiki.enabled` now defaults to `true`); it still requires a
-  configured LLM (set a provider/model, or `provider: copilot`) before it generates anything.
+- **Deep-wiki is opt-in** (`wiki.enabled` defaults to `false`) — a safe default for public
+  distribution, since generation calls out to an LLM. Enable it explicitly (`wiki.enabled: true`)
+  **and** configure a `generation` provider/model (or `provider: copilot`) to build the wiki. With
+  the wiki disabled, indexing, search, and the AI cache all work normally; only wiki build/`ask`
+  are inert.
 - **Deep Wiki — RAG grounding overhaul (documents HOW code works, not just what exists).**
   - Retrieval: the candidate search now matches keywords as substrings (was exact-name-only,
     which starved pages into the same generic top-50 exports); token accounting charges
@@ -163,11 +174,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whether its embedding existed*, so understanding written when the embed failed (model still
   downloading at first index) or after an embedding-backend purge was never re-embedded. The
   pass now backfills orphaned understanding rows, so semantic recall stays populated.
-- **The seeded config no longer disables the wiki by default.** `WikiConfig.enabled` defaults to
-  `true` (deep-wiki on by default), but the bundled `DEFAULT_CONFIG_YAML` — written to a fresh
-  repo's `config.yaml` — still seeded `wiki.enabled: false`, which won at load time and left the
-  wiki off on new repos, contradicting the documented default. The template now seeds
-  `wiki.enabled: true`, matching the dataclass and the "deep-wiki on by default" intent.
+- **The `WikiConfig` dataclass default and the bundled `DEFAULT_CONFIG_YAML` template are kept in
+  sync** (both seed `wiki.enabled: false`), so a fresh repo's `config.yaml` and the in-code default
+  agree instead of silently disagreeing at load time.
 - **Docs now show the real generation defaults.** The README config example and the configuration
   reference advertised the retired MiniMax default (`provider: minimax`, `model: MiniMax-Text-01`,
   stale `timeout_s`/`max_output_tokens`); they now show the actual defaults (`provider: copilot`,
