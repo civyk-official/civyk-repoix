@@ -5,6 +5,99 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.0] - 2026-07-10
+
+### Added
+
+- **Embedded `repoix` agent skill + `civyk-repoix skill` command** — the adoption layer
+  for agents that under-use the semantic index. The skill (decision matrix vs grep,
+  scenario recipes, `civyk-repoix query` CLI fallback, freshness rules) is embedded in
+  the executable as a constant (works in wheels and Nuitka builds alike) and installs
+  with `civyk-repoix skill install --scope user|project` (`show`/`status` included).
+  Installs are version-stamped: re-running upgrades older installs and leaves
+  same-or-newer ones untouched. `civyk-repoix init` now installs the project-scope
+  skill for Claude by default (`--no-skill` to opt out).
+- **Decision-time semantic nudge (`suggest-repoix` hook)** — a PreToolUse `Grep|Glob`
+  hook that, when a search pattern looks like SYMBOL discovery (identifier-shaped, no
+  regex metacharacters), injects one `additionalContext` line pointing at
+  `search(action="symbols")`/`symbol(action="callers")`/`explore` and the skill.
+  Rate-limited to once per 10 minutes per repo, silent without an index, and never
+  fired for literal/regex searches — a rare, high-signal reminder rather than noise.
+- **Permission friction removal** — installing Claude hooks now additively allows the
+  `mcp__civyk-repoix` server in the project `.claude/settings.json` permissions, so
+  semantic calls never cost a permission prompt that a plain grep doesn't (user
+  entries are preserved verbatim; the entry is added only when absent).
+
+### Changed
+
+- **Slimmer session-start context** — the SessionStart hook now injects a compact
+  (~15-line) decision brief instead of the full ~2k-token tool manual; the manual
+  content moved into the installable skill. Small blocks survive long-session context
+  decay; nothing is lost.
+- `civyk_repoix.__version__` re-synced with the package version (was stale at 1.8.0).
+
+## [1.9.0] - 2026-07-10
+
+### Added
+
+- **Compounding research notes** — `wiki(action="ask", mode="deep", save=true)` files the
+  deep-research answer as a durable "Research Notes" page under
+  `memory/deep-wiki/<branch>/notes/`, chunked + embedded so future asks retrieve it instead of
+  re-deriving the research. Notes are exempt from build pruning, appear in the wiki README and
+  manifest under their own section, and surface as stale (status + lint) when their cited files
+  change. Sources are capped to the 20 paths the answer actually cites (frequency-ranked);
+  re-saving the same question refreshes the note; long distinct questions get hash-disambiguated
+  ids so truncation can never overwrite a different note; a per-branch cap (200) fails loudly
+  instead of flooding retrieval; `save` outside `mode="deep"` returns an explanatory `save_note`
+  instead of silently doing nothing.
+- **Owner steering (`memory/deep-wiki/steering.yaml`)** — Devin `.devin/wiki.json`-style human
+  guidance the generator honors: `notes` (repo context injected into planning/synthesis/business
+  prompts; bounded at 10 notes × 2000 chars), `pages` (owner-pinned pages whose path prefixes are
+  claimed away from auto-planning), `emphasis` (per-page-id or `"*"` global), and `exclude_paths`
+  (hidden from the wiki — including flow anchors and research-note sources — and surfaced by lint
+  as an `excluded-paths` finding so exclusions are never silent). Lenient validation (bad steering
+  never fails a build); the steering hash participates in both the staleness sentinel AND the
+  incremental grounding hash, so a steering-only change re-synthesizes pages exactly once (never
+  reuses stale cached prose). Gate: `wiki.steering` (default on; also `CIVYK_WIKI_STEERING`),
+  honored consistently by generate, status, and lint.
+- **Wiki lint (`wiki(action="lint")`)** — cross-page health checks the per-page pipeline cannot
+  see: broken inter-page links, dead repo links, orphan pages, dead citations, stale pages/notes,
+  dead notes (every cited source left the index — high severity), unverifiable notes (no indexed
+  sources at all), coverage gaps, deliberately excluded paths, duplicate titles; findings are
+  capped per kind with a visible rollup, links inside code fences are ignored, and repo-link
+  probes refuse to leave the repository root. An optional LLM tier (`wiki.lint_llm`, default off;
+  `CIVYK_WIKI_LINT_LLM`) checks page digests for contradictions/duplicated coverage, accepting
+  only findings grounded in real page ids. The free structural tier also runs at the end of every
+  changed build (no-op builds carry the previous summary forward); its summary lands in
+  `manifest.json` stats. Status and lint share one staleness predicate, so they can never
+  disagree.
+- **Append-only wiki log** — `memory/deep-wiki/<branch>/log.md` records one grep-able
+  `## [timestamp] kind | summary` line per build, filed research note, and lint pass (O(1)
+  appends; rotates past 500 entries).
+- **Architecture-aware planning** — the LLM structure planner now sees the subsystem dependency
+  edges, top-level (zero in-degree) subsystems, and entry-point files, so module grouping follows
+  the code's wiring rather than folder shape.
+- **PageRank importance ranking** — pure-Python PageRank over the file dependency graph (Aider
+  repo-map style), fed by one bulk edge query per build. It upgrades module-page importance
+  (central-or-large, not just large) and drives deep-treatment selection (global centrality
+  breaks fan-in ties); the page-set cut itself stays size-primary with rank as tie-break, keeping
+  the structural planner's documented stable-page-set contract.
+- **Adaptive module decomposition** — module pages above `wiki.max_files_per_page` (default 40;
+  `CIVYK_WIKI_MAX_FILES_PER_PAGE`) split into child pages (by directory, or alphabetical chunks
+  for one flat directory); the parent becomes a synthesis page grounded in its children's digests
+  via the existing bottom-up phases, and rebuilds only when one of its own children changed. The
+  low-importance "Additional Modules" catch-all is exempt (explicit flag, not an id match).
+
+### Fixed
+
+- `wiki(action="status")` staleness no longer misreads non-file sentinel keys in
+  `source_hashes` (e.g. the steering sentinel) as missing files, and now runs on one bulk
+  file-hash query instead of one point query per cited path.
+- `civyk-repoix rebuild` now actually reindexes. It was sending an unregistered
+  top-level `force_reindex` RPC (the worker routes reindex through the `status`
+  tool's `action="reindex"`), so every invocation failed with "Method not found:
+  force_reindex". Now sends the correct `status`/`reindex` request.
+
 ## [1.8.0] - 2026-07-09
 
 ### Security
@@ -37,6 +130,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (every installed command is `civyk-repoix hooks <subcommand>`), preserving user
   hooks that call `civyk-repoix query`/`status`/`serve`.
 
+- **Deep-wiki no longer silently ships body-less "stub" pages.** When the LLM returned an empty
+  completion (e.g. a verbose model whose huge-page generation was dropped), the generator fell
+  through to a diagram+sources-only structural page and counted it as `built` — so the build tally
+  reported success while the page had no prose. Such a page now fails loudly (logged + counted in
+  `failed`) instead of masquerading as built, so the tally is honest and the page can be
+  regenerated. (Raising the per-call `generation.timeout_s` also prevents the empty-completion case
+  for slow/verbose models on the largest pages.) The same guard runs in the enrichment/correction
+  pass, so a failed correction can never overwrite a good page with a stub.
+- **Gap markers no longer leak into published pages inside code fences.** Some models emit the
+  internal `<<NEED: …>>` grounding marker as a code comment (e.g. `import X  # <<NEED: path>>`);
+  the stripper skipped fenced code, so those leaked into examples. It now removes the marker (and a
+  comment it leaves empty) inside fences too, keeping the code line intact.
+- **Auto-understanding embeddings are no longer left missing.** The index-time
+  auto-understanding pass skipped files that already had an understanding row *regardless of
+  whether its embedding existed*, so understanding written when the embed failed (model still
+  downloading at first index) or after an embedding-backend purge was never re-embedded. The
+  pass now backfills orphaned understanding rows, so semantic recall stays populated.
+- **The `WikiConfig` dataclass default and the bundled `DEFAULT_CONFIG_YAML` template are kept in
+  sync** (both seed `wiki.enabled: false`), so a fresh repo's `config.yaml` and the in-code default
+  agree instead of silently disagreeing at load time.
+- **Docs now show the real generation defaults.** The README config example and the configuration
+  reference advertised the retired MiniMax default (`provider: minimax`, `model: MiniMax-Text-01`,
+  stale `timeout_s`/`max_output_tokens`); they now show the actual defaults (`provider: copilot`,
+  `model: claude-opus-4.8`) and stop calling MiniMax "the default."
+
 ### Changed
 
 - **Redesigned the Claude per-file cache hints to be model-visible and quiet.**
@@ -55,43 +173,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   restored conversation context) and conversation logging / finalize are retained.
   The CLI handlers remain available and Cursor/Windsurf/Copilot installs are
   unchanged.
-
-### Added
-
-- **GitHub Copilot as an LLM provider.** Set `generation.provider: copilot` (or
-  `CIVYK_LLM_PROVIDER=copilot`) to drive the whole deep-wiki pipeline — page generation,
-  business-context, sequence diagrams, and `ask` — with a GitHub Copilot subscription, a drop-in
-  alternative to MiniMax/OpenAI. An in-process adapter exchanges a GitHub OAuth token for the
-  short-lived Copilot token (auto-refreshed) and sends the editor headers, talking directly to
-  `api.githubcopilot.com` (no separate proxy). The GitHub credential is reused from an editor that's
-  already signed in to Copilot (`~/.config/github-copilot/{apps,hosts}.json`), or obtained via a
-  one-time `civyk-repoix copilot login`; it is never written to config. New CLI:
-  `copilot login | models | status`. Pick a model with `generation.model` (e.g. `gpt-4o`,
-  `claude-3.7-sonnet`); list ids via `civyk-repoix copilot models`.
-- **Streaming (SSE) responses for all LLM providers** (`generation.stream`, default `true`). The
-  client now accumulates streamed deltas over both transports (stdlib `urllib`/Copilot and the
-  `openai` SDK). This lifts GitHub Copilot's **16k non-streaming output cap** (`choices: []` on
-  cap-hit) up to each model's full output limit (e.g. 64k for Claude Sonnet 4.6), so large wiki
-  pages generate completely instead of failing. Hardened for cross-provider use: tolerates
-  non-numeric usage fields, surfaces in-band `data: {error}` events as retryable, falls back to a
-  buffered JSON body when a provider ignores `stream`, gracefully degrades to non-streaming on a
-  `stream_options` 400, and bounds total wall-clock per call (the socket timeout only bounds each
-  read). Set `generation.stream: false` for endpoints without SSE support.
-- **Incremental wiki edits — delta builds stop reword-churning pages** (`wiki.incremental_edits`,
-  default `true`). A delta rebuild previously re-synthesized every stale page from scratch, so an
-  unrelated edit produced large reword/rephrase diffs. Now each page is gated on a hash of its
-  actual LLM input (grounding snippets + deterministic diagrams): a page whose input is unchanged
-  **reuses its prior prose with no LLM call** (and the build is a true no-op when the rendered
-  markdown is identical), while a page whose input changed is **minimally revised** — the model
-  edits the prior page instead of rewriting it. Citations are re-validated against the index in
-  both paths, so accuracy is preserved while diffs stay small and token use drops. `force=true`
-  (and the enrichment correction pass) still do a full re-synthesis. Cached per page in a new
-  `wiki_pages.build_cache` column (schema `2.5.0`); set `wiki.incremental_edits: false` to restore
-  full re-synthesis of every stale page. A malformed/missing cache degrades to a full rebuild of
-  that page (it never aborts a build), and a no-op reuse still rewrites the page file so a deleted
-  page self-heals.
-
-### Changed
 
 - **Deep-wiki is now locked to the default branch by default** (new `wiki.default_branch_only`,
   default `true`). Every build path — delta/file-change, scheduled, and manual
@@ -155,32 +236,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     candidate pool (hybrid lexical + semantic), so descriptive topics recall code that
     exact-name matching misses.
 
-### Fixed
+### Added
 
-- **Deep-wiki no longer silently ships body-less "stub" pages.** When the LLM returned an empty
-  completion (e.g. a verbose model whose huge-page generation was dropped), the generator fell
-  through to a diagram+sources-only structural page and counted it as `built` — so the build tally
-  reported success while the page had no prose. Such a page now fails loudly (logged + counted in
-  `failed`) instead of masquerading as built, so the tally is honest and the page can be
-  regenerated. (Raising the per-call `generation.timeout_s` also prevents the empty-completion case
-  for slow/verbose models on the largest pages.) The same guard runs in the enrichment/correction
-  pass, so a failed correction can never overwrite a good page with a stub.
-- **Gap markers no longer leak into published pages inside code fences.** Some models emit the
-  internal `<<NEED: …>>` grounding marker as a code comment (e.g. `import X  # <<NEED: path>>`);
-  the stripper skipped fenced code, so those leaked into examples. It now removes the marker (and a
-  comment it leaves empty) inside fences too, keeping the code line intact.
-- **Auto-understanding embeddings are no longer left missing.** The index-time
-  auto-understanding pass skipped files that already had an understanding row *regardless of
-  whether its embedding existed*, so understanding written when the embed failed (model still
-  downloading at first index) or after an embedding-backend purge was never re-embedded. The
-  pass now backfills orphaned understanding rows, so semantic recall stays populated.
-- **The `WikiConfig` dataclass default and the bundled `DEFAULT_CONFIG_YAML` template are kept in
-  sync** (both seed `wiki.enabled: false`), so a fresh repo's `config.yaml` and the in-code default
-  agree instead of silently disagreeing at load time.
-- **Docs now show the real generation defaults.** The README config example and the configuration
-  reference advertised the retired MiniMax default (`provider: minimax`, `model: MiniMax-Text-01`,
-  stale `timeout_s`/`max_output_tokens`); they now show the actual defaults (`provider: copilot`,
-  `model: claude-opus-4.8`) and stop calling MiniMax "the default."
+- **GitHub Copilot as an LLM provider.** Set `generation.provider: copilot` (or
+  `CIVYK_LLM_PROVIDER=copilot`) to drive the whole deep-wiki pipeline — page generation,
+  business-context, sequence diagrams, and `ask` — with a GitHub Copilot subscription, a drop-in
+  alternative to MiniMax/OpenAI. An in-process adapter exchanges a GitHub OAuth token for the
+  short-lived Copilot token (auto-refreshed) and sends the editor headers, talking directly to
+  `api.githubcopilot.com` (no separate proxy). The GitHub credential is reused from an editor that's
+  already signed in to Copilot (`~/.config/github-copilot/{apps,hosts}.json`), or obtained via a
+  one-time `civyk-repoix copilot login`; it is never written to config. New CLI:
+  `copilot login | models | status`. Pick a model with `generation.model` (e.g. `gpt-4o`,
+  `claude-3.7-sonnet`); list ids via `civyk-repoix copilot models`.
+- **Streaming (SSE) responses for all LLM providers** (`generation.stream`, default `true`). The
+  client now accumulates streamed deltas over both transports (stdlib `urllib`/Copilot and the
+  `openai` SDK). This lifts GitHub Copilot's **16k non-streaming output cap** (`choices: []` on
+  cap-hit) up to each model's full output limit (e.g. 64k for Claude Sonnet 4.6), so large wiki
+  pages generate completely instead of failing. Hardened for cross-provider use: tolerates
+  non-numeric usage fields, surfaces in-band `data: {error}` events as retryable, falls back to a
+  buffered JSON body when a provider ignores `stream`, gracefully degrades to non-streaming on a
+  `stream_options` 400, and bounds total wall-clock per call (the socket timeout only bounds each
+  read). Set `generation.stream: false` for endpoints without SSE support.
+- **Incremental wiki edits — delta builds stop reword-churning pages** (`wiki.incremental_edits`,
+  default `true`). A delta rebuild previously re-synthesized every stale page from scratch, so an
+  unrelated edit produced large reword/rephrase diffs. Now each page is gated on a hash of its
+  actual LLM input (grounding snippets + deterministic diagrams): a page whose input is unchanged
+  **reuses its prior prose with no LLM call** (and the build is a true no-op when the rendered
+  markdown is identical), while a page whose input changed is **minimally revised** — the model
+  edits the prior page instead of rewriting it. Citations are re-validated against the index in
+  both paths, so accuracy is preserved while diffs stay small and token use drops. `force=true`
+  (and the enrichment correction pass) still do a full re-synthesis. Cached per page in a new
+  `wiki_pages.build_cache` column (schema `2.5.0`); set `wiki.incremental_edits: false` to restore
+  full re-synthesis of every stale page. A malformed/missing cache degrades to a full rebuild of
+  that page (it never aborts a build), and a no-op reuse still rewrites the page file so a deleted
+  page self-heals.
 
 ## [1.7.0] - 2026-06-14
 
@@ -628,7 +717,7 @@ semantic search. Persists sessions across restarts and context compactions.
 
 ### Documentation
 
-- Reorganized documentation with indexes
+- Reorganized into `docs/design/` with indexes
 - Architecture docs with diagrams (lifecycle, MCP flow, cache, schema)
 - Conversation tools and AI cache hooks documentation
 - MCP server handler docstrings, Sigstore verification docs

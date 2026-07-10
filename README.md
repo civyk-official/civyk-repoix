@@ -127,7 +127,7 @@ ______________________________________________________________________
 | **Extended** | `quality` | `dead_code`, `duplicates`, `circular_deps`, `impact` | Code health and impact analysis |
 | **Extended** | `context` | `task`, `delta`, `docs`, `trace` | Token-budgeted context packs |
 | **Extended** | `tests` | `recommended`, `for_file`, `code_for_test` | Test discovery and mapping |
-| **Extended** | `wiki` | `ask`, `generate`, `status`, `list`, `read`, `export` | Deep-wiki generation + grounded Q&A over the codebase |
+| **Extended** | `wiki` | `ask`, `generate`, `status`, `list`, `read`, `export`, `lint` | Deep-wiki generation + grounded Q&A over the codebase |
 | **Specialist** | `conversation` | `list`, `history`, `search`, `context`, `log`, `finalize` | Conversation history across sessions |
 
 > **Tip:** Use `understand(action="recall")` before reading files — cached analysis saves 80-90% of tokens.
@@ -212,6 +212,25 @@ identical system prefix across all pages so providers can serve it from their pr
 
 - **Ask the wiki:** `wiki(action="ask", query="how does auth work", mode="answer")` — `rag`
   (sections + citations, no LLM cost), `answer` (LLM-synthesized), or `deep` (multi-step research).
+- **Compounding research notes:** `wiki(action="ask", mode="deep", save=true)` files the answer as
+  a durable **Research Notes** page (chunked + embedded), so future asks retrieve it instead of
+  re-deriving the research. Notes survive rebuilds and surface as stale when their cited files
+  change.
+- **Owner steering:** an optional `memory/deep-wiki/steering.yaml` lets the repo owner add context
+  notes, pin custom pages (`pages:` with path prefixes), emphasize topics per page or globally
+  (`emphasis:`), and hide paths from the wiki (`exclude_paths:`). Steering changes automatically
+  mark affected pages stale.
+- **Wiki lint:** `wiki(action="lint")` runs cross-page health checks — broken/dead links, orphan
+  pages, dead citations, stale pages/notes, dead/unverifiable notes, coverage gaps, deliberately
+  excluded paths, duplicate titles — plus an optional LLM contradiction/duplication pass
+  (`wiki.lint_llm`). The free structural tier also runs after every changed build and lands in
+  the manifest.
+- **Append-only audit log:** every build, filed note, and lint pass appends one grep-able line to
+  `memory/deep-wiki/<branch>/log.md` — the wiki's chronological history.
+- **Architecture-aware planning:** the LLM planner sees the subsystem dependency graph and entry
+  points (grouping by wiring, not folder shape); page importance and grounding depth are ranked by
+  **PageRank** over the file dependency graph; oversized modules (`wiki.max_files_per_page`)
+  decompose into child pages with a digest-grounded parent overview.
 - **Intelligent (re)generation:** triggered by a **changed-file threshold** and/or a **schedule** —
   never on every save. **Opt-in** — deep-wiki is off by default; set `wiki.enabled: true` **and**
   configure a `generation` provider to turn it on. Incremental: only pages whose sources changed
@@ -361,8 +380,9 @@ Civyk Repo Index installs a small set of Claude Code hooks. Everything they surf
 
 ```mermaid
 flowchart TD
-    A["SessionStart (startup / resume / compact)"] -->|additionalContext| B["Injects AI-cache status + restored conversation context"]
+    A["SessionStart (startup / resume / compact)"] -->|additionalContext| B["Injects compact usage brief + AI-cache status + restored conversation context"]
     R["PreToolUse: Read a cached file"] -->|additionalContext| RH["Recall hint: understand(recall) before re-reading"]
+    S["PreToolUse: Grep/Glob for a symbol"] -->|additionalContext| SH["Semantic nudge: search(symbols) / callers / explore (max 1 per 10 min)"]
     W["PostToolUse: Edit/Write a cached file"] -->|additionalContext| WH["Refresh hint: understand(store) — cache now stale"]
     C["UserPromptSubmit / PostToolUse"] --> D["Log prompt & tool usage to conversation history"]
     G["Stop"] --> H["Finalizes the session record"]
@@ -384,11 +404,38 @@ flowchart TD
 Hooks are configured automatically during setup:
 
 ```bash
-civyk-repoix init              # Configures MCP + hooks
+civyk-repoix init              # Configures MCP + hooks + project skill + permission allow
 civyk-repoix init --no-hooks   # Skip hook configuration
+civyk-repoix init --no-skill   # Skip the project-scope agent skill
 ```
 
 > **Conversation continuity**: SessionStart hooks reinject prior context after resume/compaction so long sessions keep the thread, and the logging hooks build a searchable history (see the `conversation` tool).
+
+### Making Agents Actually Use the Index — the `repoix` Skill
+
+Static instructions decay over long sessions, so agents drift back to grep and re-discover
+the same code every session. Three layers counter that:
+
+1. **The `repoix` skill** — a decision-time playbook (when to use the semantic tools vs
+   grep, scenario recipes, CLI fallback, freshness rules) that the agent loads when a
+   discovery-shaped task appears. Embedded in the executable; install once for all your
+   projects:
+
+   ```bash
+   civyk-repoix skill install                   # user scope (~/.claude/skills)
+   civyk-repoix skill install --scope project   # this project only (also done by init)
+   civyk-repoix skill status                    # installed versions per scope
+   ```
+
+   Installs are version-stamped — re-running after an upgrade refreshes the skill.
+
+2. **The `suggest-repoix` nudge** (Claude, PreToolUse `Grep|Glob`) — when a search pattern
+   looks like symbol discovery, one `additionalContext` line points at
+   `search(action="symbols")` / `symbol(action="callers")` / `explore`. Rate-limited to
+   once per 10 minutes; never fires for literal/regex searches (grep is right there).
+
+3. **Zero permission friction** — setup pre-allows the `mcp__civyk-repoix` server in the
+   project settings, so a semantic call never costs a prompt that a plain grep doesn't.
 
 ______________________________________________________________________
 
@@ -442,6 +489,7 @@ civyk-repoix query search --action symbols --query "%User%" --kind class
 civyk-repoix query context --action task --task "implement auth" --token-budget 1000
 civyk-repoix query conversation --action list --days 7  # View recent sessions
 civyk-repoix query --schema  # Get JSON schema of all tools
+civyk-repoix skill install   # Install the agent skill (see AI Cache Hooks section)
 ```
 
 **Tool Name Mapping:** MCP uses `snake_case` (e.g., `search`), CLI uses `kebab-case` (e.g., `search`). Actions are passed via `--action`.
@@ -488,6 +536,9 @@ wiki:
   file_change_threshold: 25    # regenerate after N changed source files
   schedule_interval_s: 0       # 0 => disabled; else periodic build cadence (seconds)
   incremental_edits: true      # delta: reuse unchanged prose; minimal LLM edits when changed
+  steering: true               # honor memory/deep-wiki/steering.yaml (owner notes/pages/emphasis/excludes)
+  lint_llm: false              # wiki lint: also run the LLM contradiction/duplication pass
+  max_files_per_page: 40       # split a module page into child pages above this many files
 ```
 
 > **`incremental_edits` (on by default)** keeps delta rebuilds quiet. On a delta build, a page
@@ -520,6 +571,9 @@ wiki:
 | `CIVYK_LLM_EMBEDDING_MODEL` | — | Embedding model id for the `openai` backend |
 | `CIVYK_WIKI_ENABLED` | false | Enable deep-wiki generation |
 | `CIVYK_WIKI_FILE_CHANGE_THRESHOLD` | 25 | Changed source files before an auto-rebuild |
+| `CIVYK_WIKI_STEERING` | true | Honor `memory/deep-wiki/steering.yaml` |
+| `CIVYK_WIKI_LINT_LLM` | false | Wiki lint: run the LLM contradiction pass |
+| `CIVYK_WIKI_MAX_FILES_PER_PAGE` | 40 | Module-page decomposition threshold |
 
 ______________________________________________________________________
 
