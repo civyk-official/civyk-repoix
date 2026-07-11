@@ -89,6 +89,18 @@ jobs:
             cibw_archs: "arm64"
 
     steps:
+      # Guard: an empty tag (e.g. a repository_dispatch sent without the
+      # client_payload) would make checkout fall back to the private repo's
+      # DEFAULT BRANCH and publish untagged main HEAD to PyPI. Fail instead.
+      - name: Require a release tag
+        shell: bash
+        run: |
+          if [ -z "$RELEASE_TAG" ]; then
+            echo "::error::No release tag provided (inputs.tag / client_payload.tag is empty)."
+            exit 1
+          fi
+          echo "Building tag: $RELEASE_TAG"
+
       - name: Checkout PRIVATE source at the release tag
         uses: actions/checkout@v4
         with:
