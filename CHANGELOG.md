@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.1] - 2026-07-11
+
+### Changed
+
+- **`repoix` skill hardened to a mandatory playbook** (skill-creator standards
+  review): the trigger description is now deliberately pushy ("MANDATORY for any
+  multi-file code investigation … even when the user never mentions repoix"),
+  and the advisory guidance became six binding rules (route semantic tasks
+  through repoix, recall-before-read, tests-before-commit, store-after-analysis,
+  CLI fallback when the MCP is down, and where grep/Read stays the required
+  choice) — each with a one-line rationale. Re-run `civyk-repoix skill install`
+  to pick it up (version-gated installs upgrade automatically).
+
 ## [1.10.0] - 2026-07-10
 
 ### Added
