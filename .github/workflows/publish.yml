@@ -1,0 +1,454 @@
+# ============================================================================
+# GitHub Actions Workflow: Build and Publish Wheels (public-repo CI)
+# ============================================================================
+#
+# Purpose: Build Nuitka-compiled binary wheels for all major platforms from the
+#          PRIVATE source repository and publish them to PyPI, with Sigstore
+#          signing. Lives in the PUBLIC repo because GitHub Actions minutes are
+#          free for public repositories (a private-repo release run costs
+#          $4-10; macOS runners bill at a 10x multiplier).
+#
+# Security model:
+#   - Source is checked out from the private repo via the PRIVATE_REPO_TOKEN
+#     secret (fine-grained PAT, Contents:read only). Secrets are never exposed
+#     to forks: the only triggers are workflow_dispatch (collaborators) and
+#     repository_dispatch (token holders) — there is NO pull_request trigger.
+#   - Logs are public but contain only build output; wheels are Nuitka-compiled
+#     machine code (no source), and the verify job enforces that no .py files
+#     leak into them. The wheels become public on PyPI anyway.
+#   - Sigstore identity = THIS workflow, which is exactly what the published
+#     verification instructions reference.
+#
+# Triggers:
+#   - workflow_dispatch: manual — give the private-repo tag to build
+#   - repository_dispatch (type: release): fired by the private repo's
+#     trigger-public-release workflow on release publication
+#
+# Required secrets (public repo -> Settings -> Secrets -> Actions):
+#   - PRIVATE_REPO_TOKEN: fine-grained PAT, Repository access = the private
+#     repo, Permissions = Contents: Read-only
+#   - PYPI_TOKEN: PyPI API token for publishing
+#
+# Author: Veerabhadra Rao (Veera) Ponna
+# Company: Civyk
+#
+# ============================================================================
+
+name: Build and Publish Wheels
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Private-repo tag to build (e.g. 1.10.1)"
+        required: true
+        type: string
+      publish_to_pypi:
+        description: "Publish to PyPI"
+        required: true
+        default: true
+        type: boolean
+  repository_dispatch:
+    types: [release]
+
+# Ensure only one publish workflow runs at a time
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.inputs.tag || github.event.client_payload.tag }}
+  cancel-in-progress: true
+
+env:
+  # Nuitka cache for faster rebuilds
+  NUITKA_CACHE_DIR: /tmp/nuitka-cache
+  # The tag to build, from either trigger
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.event.client_payload.tag }}
+
+jobs:
+  # ==========================================================================
+  # Build wheels for all platforms using cibuildwheel + Nuitka
+  # ==========================================================================
+  build_wheels:
+    name: Build wheels on ${{ matrix.os }} (${{ matrix.cibw_archs }})
+    # Guard: never run in forks (they lack the secrets anyway; fail clearly).
+    if: github.repository == 'civyk-official/civyk-repoix'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 100  # Nuitka builds take longer (Windows crossed 60min at 1.10.0)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux x86_64 (manylinux_2_28)
+          - os: ubuntu-latest
+            cibw_archs: "x86_64"
+
+          # Windows x64
+          - os: windows-latest
+            cibw_archs: "AMD64"
+
+          # macOS ARM64 (Rosetta 2 also runs these on Intel Macs)
+          - os: macos-14
+            cibw_archs: "arm64"
+
+    steps:
+      - name: Checkout PRIVATE source at the release tag
+        uses: actions/checkout@v4
+        with:
+          repository: veerabhadra-ponna/civyk-repoix-private
+          ref: ${{ env.RELEASE_TAG }}
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          fetch-depth: 0
+
+      # Set up Python for the build
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Install C compiler on Windows
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      # Cache cibuildwheel downloads (virtualenv, etc.) to avoid GitHub rate limits
+      - name: Cache cibuildwheel
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/cibuildwheel
+            C:\Users\runneradmin\AppData\Local\pypa\cibuildwheel\Cache
+          key: cibw-${{ matrix.os }}-${{ matrix.cibw_archs }}
+
+      # Cache Nuitka compilation artifacts
+      - name: Cache Nuitka
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/Nuitka
+            /tmp/nuitka-cache
+            C:\temp\nuitka-cache
+          key: nuitka-${{ matrix.os }}-${{ matrix.cibw_archs }}-${{ hashFiles('src/**/*.py') }}
+          restore-keys: |
+            nuitka-${{ matrix.os }}-${{ matrix.cibw_archs }}-
+
+      # Install cibuildwheel manually (not the action) so we can pre-download
+      # virtualenv.pyz and patch download() to skip if file already exists.
+      # cibuildwheel v2.22.0's download() has NO existence check — it always
+      # re-downloads, ignoring cached files. This causes persistent 429 errors.
+      - name: Install cibuildwheel and pre-download virtualenv
+        shell: python
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          import os, subprocess, sys
+          from pathlib import Path
+
+          # Install cibuildwheel
+          subprocess.check_call([sys.executable, "-m", "pip", "install", "cibuildwheel==2.22.0"])
+
+          # Determine cache directory (matches cibuildwheel's platformdirs)
+          if sys.platform == "win32":
+              cache_dir = Path(os.environ.get("LOCALAPPDATA", "")) / "pypa" / "cibuildwheel" / "Cache"
+          else:
+              cache_dir = Path.home() / ".cache" / "cibuildwheel"
+          cache_dir.mkdir(parents=True, exist_ok=True)
+
+          # Pre-download virtualenv.pyz with retries
+          target = cache_dir / "virtualenv-20.27.1.pyz"
+          if not target.exists() or target.stat().st_size < 1000:
+              print(f"Downloading virtualenv-20.27.1.pyz to {target}")
+              subprocess.run([
+                  "curl", "-sL", "--retry", "5", "--retry-delay", "10", "--retry-all-errors",
+                  "-H", f"Authorization: token {os.environ['GH_TOKEN']}",
+                  "-o", str(target),
+                  "https://github.com/pypa/get-virtualenv/raw/20.27.1/public/virtualenv.pyz",
+              ])
+              if target.exists() and target.stat().st_size > 1000:
+                  print(f"Downloaded {target.stat().st_size} bytes")
+              else:
+                  print("WARNING: Download may have failed, cibuildwheel will retry")
+          else:
+              print(f"Already cached: {target} ({target.stat().st_size} bytes)")
+
+          # Patch cibuildwheel's download() to skip if file already exists
+          import cibuildwheel.util as util
+          util_file = Path(util.__file__)
+          source = util_file.read_text(encoding="utf-8")
+          old_sig = "def download(url: str, dest: Path) -> None:\n"
+          new_sig = (
+              "def download(url: str, dest: Path) -> None:\n"
+              "    if dest.exists() and dest.stat().st_size > 0:\n"
+              "        return\n"
+          )
+          if old_sig in source and "dest.exists()" not in source.split("def download")[1][:300]:
+              source = source.replace(old_sig, new_sig, 1)
+              util_file.write_text(source, encoding="utf-8")
+              print(f"Patched {util_file}: download() now skips if file exists")
+          else:
+              print("Patch not needed (already applied or signature changed)")
+
+      # Build wheels using cibuildwheel CLI (not the action)
+      - name: Build wheels
+        shell: bash
+        run: cibuildwheel --output-dir wheelhouse
+        env:
+          # Architecture to build
+          CIBW_ARCHS: ${{ matrix.cibw_archs }}
+
+          # Python versions to build
+          CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-*"
+
+          # Skip 32-bit and musllinux builds
+          CIBW_SKIP: "*-win32 *-manylinux_i686 *musllinux*"
+
+          # Install Nuitka before building
+          CIBW_BEFORE_BUILD: "pip install nuitka>=2.0.0 ordered-set>=4.1.0 setuptools wheel"
+
+          # Linux: Install compiler and use manylinux_2_28
+          CIBW_BEFORE_ALL_LINUX: "yum install -y gcc gcc-c++ patchelf || true"
+          CIBW_MANYLINUX_X86_64_IMAGE: "manylinux_2_28"
+
+          # macOS: Ensure Xcode tools
+          CIBW_BEFORE_ALL_MACOS: "xcode-select --install 2>/dev/null || true"
+
+          # Environment variables
+          CIBW_ENVIRONMENT: "NUITKA_CACHE_DIR=/tmp/nuitka-cache"
+          CIBW_ENVIRONMENT_WINDOWS: "NUITKA_CACHE_DIR=C:\\temp\\nuitka-cache"
+
+          # Test command
+          CIBW_TEST_COMMAND: >
+            python -c "import civyk_repoix; print(f'civyk_repoix {civyk_repoix.__version__} loaded successfully')"
+
+          # Repair wheels
+          CIBW_REPAIR_WHEEL_COMMAND_LINUX: "auditwheel repair -w {dest_dir} {wheel}"
+          CIBW_REPAIR_WHEEL_COMMAND_MACOS: "delocate-wheel --require-archs {delocate_archs} -w {dest_dir} {wheel}"
+
+      # Upload built wheels as artifacts
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}-${{ matrix.cibw_archs }}
+          path: ./wheelhouse/*.whl
+          retention-days: 7
+
+  # ==========================================================================
+  # Verify wheels contain no source code
+  # ==========================================================================
+  verify_wheels:
+    name: Verify wheels are binary-only
+    needs: build_wheels
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all wheels
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+
+      - name: Verify no .py files in wheels
+        run: |
+          echo "=== Verifying wheels contain no source code ==="
+
+          for wheel in dist/*.whl; do
+            echo ""
+            echo "Checking: $(basename $wheel)"
+            echo "----------------------------------------"
+
+            # List contents
+            unzip -l "$wheel" | head -50
+
+            # Check for .py files (excluding __init__.py which is needed for packages)
+            py_files=$(unzip -l "$wheel" | grep -E '\.py$' | grep -v '__init__.py' | grep -v 'METADATA' || true)
+
+            if [ -n "$py_files" ]; then
+              echo ""
+              echo "ERROR: Found .py source files in wheel:"
+              echo "$py_files"
+              exit 1
+            fi
+
+            # Verify compiled extensions exist (.so for Linux/macOS, .pyd for Windows)
+            compiled=$(unzip -l "$wheel" | grep -E '\.(so|pyd|cpython)' || true)
+            if [ -n "$compiled" ]; then
+              echo ""
+              echo "Compiled extensions found:"
+              echo "$compiled"
+            else
+              echo ""
+              echo "INFO: No compiled extensions found (may be pure Python wheel)"
+            fi
+
+            echo ""
+            echo "Wheel verified: $(basename $wheel)"
+          done
+
+          echo ""
+          echo "=== All wheels verified successfully ==="
+
+  # ==========================================================================
+  # Sign wheels with Sigstore
+  # ==========================================================================
+  sign_and_attest:
+    name: Sign and Attest Artifacts
+    needs: [build_wheels, verify_wheels]
+    runs-on: ubuntu-latest
+
+    # Required for Sigstore signing
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Download all wheels
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+
+      - name: List wheels to sign
+        run: |
+          echo "=== Wheels to sign ==="
+          ls -la dist/
+          echo ""
+          echo "Total wheels: $(ls dist/*.whl 2>/dev/null | wc -l)"
+
+      # Sign all wheels with Sigstore (free, keyless signing). Identity is THIS
+      # public workflow — matching the published verification instructions.
+      - name: Sign wheels with Sigstore
+        uses: sigstore/gh-action-sigstore-python@v3.2.0
+        with:
+          inputs: dist/*.whl
+          # The GitHub release lives in the PRIVATE repo, so there are no
+          # release artifacts in this repo to attach signatures to.
+          release-signing-artifacts: false
+
+      - name: List signed artifacts
+        run: |
+          echo "=== Signed artifacts ==="
+          ls -la dist/
+          echo ""
+          echo "Signature files (.sigstore):"
+          ls dist/*.sigstore 2>/dev/null || echo "No .sigstore files found"
+
+      # Upload signed wheels as artifacts
+      - name: Upload signed wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-signed
+          path: |
+            dist/*.whl
+            dist/*.sigstore
+          retention-days: 90
+
+  # ==========================================================================
+  # Publish to PyPI
+  # ==========================================================================
+  publish:
+    name: Publish to PyPI
+    needs: [build_wheels, verify_wheels, sign_and_attest]
+    runs-on: ubuntu-latest
+
+    # repository_dispatch (fired by a private-repo release) always publishes;
+    # manual runs publish unless the flag was turned off.
+    if: |
+      github.event_name == 'repository_dispatch' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.publish_to_pypi == 'true')
+
+    steps:
+      - name: Download signed wheels
+        uses: actions/download-artifact@v4
+        with:
+          name: wheels-signed
+          path: dist
+
+      - name: List wheels to publish
+        run: |
+          echo "=== Wheels to publish ==="
+          ls -la dist/
+          echo ""
+          echo "Total wheels: $(ls dist/*.whl 2>/dev/null | wc -l)"
+
+      # Publish to PyPI using an API token
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_TOKEN }}
+          packages-dir: dist/
+          skip-existing: true
+          verbose: true
+
+  # ==========================================================================
+  # Build summary
+  # ==========================================================================
+  summary:
+    name: Build Summary
+    needs: [build_wheels, verify_wheels, sign_and_attest]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Download signed wheels
+        uses: actions/download-artifact@v4
+        with:
+          name: wheels-signed
+          path: dist
+        continue-on-error: true
+
+      - name: Generate summary
+        run: |
+          echo "## Civyk Repo Index - Build Summary (tag: $RELEASE_TAG)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Author:** Veerabhadra Rao (Veera) Ponna" >> $GITHUB_STEP_SUMMARY
+          echo "**Company:** Civyk" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Build completed using **Nuitka** for native compilation with **Sigstore signing**." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ -d "dist" ] && [ "$(ls -A dist/*.whl 2>/dev/null)" ]; then
+            echo "### Built Wheels" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Wheel | Size | Platform | Signed |" >> $GITHUB_STEP_SUMMARY
+            echo "|-------|------|----------|--------|" >> $GITHUB_STEP_SUMMARY
+
+            for wheel in dist/*.whl; do
+              name=$(basename "$wheel")
+              size=$(du -h "$wheel" | cut -f1)
+
+              # Extract platform from wheel name
+              if [[ "$name" == *"linux"* ]]; then
+                platform="Linux"
+              elif [[ "$name" == *"win"* ]]; then
+                platform="Windows"
+              elif [[ "$name" == *"macos"* ]]; then
+                platform="macOS"
+              else
+                platform="Unknown"
+              fi
+
+              # Check if signature exists
+              if [ -f "dist/${name}.sigstore" ]; then
+                signed="✅"
+              else
+                signed="❌"
+              fi
+
+              echo "| \`$name\` | $size | $platform | $signed |" >> $GITHUB_STEP_SUMMARY
+            done
+
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Total wheels: $(ls dist/*.whl | wc -l)**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "No wheels were built." >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Verify Signatures" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "pip install sigstore" >> $GITHUB_STEP_SUMMARY
+          echo "sigstore verify identity \\\\" >> $GITHUB_STEP_SUMMARY
+          echo "  --cert-oidc-issuer https://token.actions.githubusercontent.com \\\\" >> $GITHUB_STEP_SUMMARY
+          echo "  --cert-identity-regexp 'https://github.com/civyk-official/civyk-repoix/.github/workflows/publish.yml@.*' \\\\" >> $GITHUB_STEP_SUMMARY
+          echo "  civyk_repoix-*.whl" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
