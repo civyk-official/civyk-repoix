@@ -42,9 +42,8 @@ AI coding assistants have **limited context windows**. They can't read entire co
 - **Real-time indexing** — Always up-to-date with your code changes
 - **Multi-language** — Python, TypeScript, JavaScript, Java, Go, C#, Rust, Ruby, PHP
 - **Branch-aware** — Separate indexes per git branch
-- **AI Context Cache** — Persist code understanding across sessions, save 80-90% tokens
-- **Semantic Search** — Vector embedding-based search across understanding cache
-- **Tiered Tool Profiles** — Core/extended/specialist tiers for right-sized tool surface
+- **Semantic Search** — Vector embedding-based symbol search
+- **Tiered Tool Profiles** — Core/extended tiers for right-sized tool surface
 
 ______________________________________________________________________
 
@@ -55,7 +54,7 @@ ______________________________________________________________________
 All extras are optional — the base install is fully functional on its own. Pick the combination for the capabilities you want:
 
 ```bash
-# 1) Base — indexing, symbol/semantic search, AI cache, MCP tools.
+# 1) Base — indexing, symbol/semantic search, MCP tools.
 #    Semantic search uses a lightweight lexical fallback (TF-IDF); no LLM features.
 pip install civyk-repoix
 
@@ -72,7 +71,7 @@ pip install "civyk-repoix[embeddings,llm]"   # or the shorthand: civyk-repoix[al
 
 | Install | Adds | Enables |
 |---------|------|---------|
-| `civyk-repoix` | — | Indexing, symbol search, TF-IDF semantic search, AI cache, all MCP tools |
+| `civyk-repoix` | — | Indexing, symbol search, TF-IDF semantic search, all MCP tools |
 | `civyk-repoix[embeddings]` | sentence-transformers, numpy | Local **vector** semantic search + wiki RAG retrieval |
 | `civyk-repoix[llm]` | openai | **Deep-wiki** generation + `ask` via OpenAI-compatible APIs |
 | `civyk-repoix[all]` | both of the above | Full feature set — best deep-wiki quality (RAG + LLM) |
@@ -87,7 +86,7 @@ cd /path/to/your/project
 # Interactive init (recommended)
 civyk-repoix init
 
-# Or configure specific agent
+# Or configure specific agents (--agent is accepted as an alias of --ai)
 civyk-repoix init --ai claude        # Claude Code
 civyk-repoix init --ai cursor-agent  # Cursor
 civyk-repoix init --ai windsurf      # Windsurf
@@ -110,77 +109,71 @@ ______________________________________________________________________
 
 ## MCP Tools
 
-15 consolidated tools for code intelligence. Each tool supports multiple actions via an `action` parameter.
+14 consolidated tools for code intelligence. Each tool supports multiple actions via an `action` parameter.
 
 | Tier | Tool | Actions | Purpose |
 |------|------|---------|---------|
-| **Core** | `status` | `check`, `reindex`, `perf_stats` | Index health, re-indexing, performance stats |
-| **Core** | `search` | `symbols`, `code`, `definition` | Find symbols, text patterns, and definitions |
+| **Core** | `status` | `check`, `reindex`, `perf_stats`, `report` | Index health, re-indexing, performance stats, REPORT.md regeneration |
+| **Core** | `search` | `symbols`, `code`, `definition` | Find symbols (substring / `A\|B` OR / LIKE), text patterns, and definitions |
 | **Core** | `symbol` | `detail`, `references`, `callers`, `hierarchy`, `similar` | Symbol details, usage sites, call graphs, type hierarchy, similar symbols |
 | **Core** | `file` | `symbols`, `imports`, `related` | Per-file symbol listing, import analysis, related files |
 | **Core** | `files` | — | List/filter repository files |
 | **Core** | `git` | `changes`, `hotspots`, `diff` | Recent changes, churn hotspots, branch diffs |
-| **Core** | `understand` | `store`, `recall`, `stats`, `invalidate` | AI context cache — persist and recall understanding |
 | **Core** | `explore` | — | Multi-strategy deep-dive in one call |
 | **Core** | `remember` | — | Cross-session key-value memory |
 | **Extended** | `architecture` | `components`, `dependencies`, `endpoints` | Module graph, dependency analysis, API endpoints |
 | **Extended** | `quality` | `dead_code`, `duplicates`, `circular_deps`, `impact` | Code health and impact analysis |
 | **Extended** | `context` | `task`, `delta`, `docs`, `trace` | Token-budgeted context packs |
 | **Extended** | `tests` | `recommended`, `for_file`, `code_for_test` | Test discovery and mapping |
-| **Extended** | `wiki` | `ask`, `generate`, `status`, `list`, `read`, `export`, `lint` | Deep-wiki generation + grounded Q&A over the codebase |
-| **Specialist** | `conversation` | `list`, `history`, `search`, `context`, `log`, `finalize` | Conversation history across sessions |
-
-> **Tip:** Use `understand(action="recall")` before reading files — cached analysis saves 80-90% of tokens.
+| **Extended** | `wiki` | `ask`, `generate`, `status`, `list`, `read`, `export`, `lint`, `plan`, `page_context`, `save_page` | Deep-wiki generation + grounded Q&A; agent-session mode (`/repoix-wiki`, no API key) via plan/page_context/save_page |
+| **Extended** | `config` | `list`, `get`, `set`, `reset` | Read and change repoix settings (wiki, embeddings, daemon) without editing files |
 
 ______________________________________________________________________
 
-## AI Context Cache — Your AI Remembers
+## Static Repo Report — One Read to Orient
 
-**The killer feature: Your AI assistant remembers what it learned about your code.**
+Every index pass regenerates `memory/codebase-index/REPORT.md`: a pre-digested
+structural overview (components and layering — with a directory-map fallback
+when component detection covers too little of the repo, component
+dependencies, likely entry points, most-referenced and highest fan-out
+symbols, a test-suite overview, 30-day change hotspots) inside a ~2-3K token
+budget. Both ends of every counted reference must be production code — a test
+calling a function is not evidence that the codebase depends on it — so the
+rankings reflect the production surface. Any agent — in any client, with no MCP
+setup — orients itself with a single file read instead of a grep sweep.
 
-Traditional AI coding assistants forget everything when you start a new chat or session. With Civyk Repo Index's AI Context Cache, understanding persists:
-
-```text
-Monday:    AI reads auth.py → analyzes → stores understanding
-Tuesday:   New chat → AI recalls cached understanding → no file read needed!
-Wednesday: You modify auth.py → cache auto-invalidates → AI re-analyzes
-```
-
-### Why This Matters
-
-| Without Cache | With Cache |
-|---------------|------------|
-| AI re-reads files every session | AI recalls previous analysis instantly |
-| Wastes tokens on repeated reads | **80-90% token savings** |
-| Slow context building | Sub-millisecond recall |
-| Understanding lost on chat restart | **Persists across sessions and chats** |
-
-### How It Works
-
-1. **First encounter**: AI reads a file, analyzes it, calls `understand(action="store")`
-1. **Future sessions**: AI calls `understand(action="recall")` first — gets cached analysis
-1. **File changes**: Cache auto-invalidates via content hash — AI re-analyzes
-1. **Per-repository**: Each repo has its own persistent cache
-
-### Cache Tools
-
-| Tool | Purpose |
-|------|---------|
-| `understand(action="recall")` | **Call FIRST** before reading any file — retrieves cached analysis |
-| `understand(action="store")` | Persist AI's analyzed understanding after reading files |
-| `understand(action="stats")` | **Session start**: List cached targets, filter by path/scope, sort, check freshness |
-| `understand(action="invalidate")` | Manually clear cached entries when needed |
-
-`understand(action="store")` supports structured fields (purpose, key_points, gotchas) plus a free-form `analysis` field for complex business logic, state machines, and workflows.
-
-> **Pro tip**: The AI Context Cache is stored locally in SQLite alongside your code index. Your analysis never leaves your machine.
+- **Graph confidence.** References resolve by name, so every edge records how it
+  was resolved — `local` (same file), `import` (a module this file imports),
+  `unique` (the only definition of that name), or `ambiguous` (a guess among
+  equals). **Only evidence-backed edges rank**; the report states the mix, so a
+  guess is never presented as a fact, and a report built on an unresolved graph
+  says so instead of publishing a plausible-looking table.
+- **`memory/codebase-index/graph.json`** ships beside the report: the same
+  file-level dependency graph, machine-readable (nodes = production files with
+  `path`, `language`, `symbols` and `component`; edges = weighted file→file
+  references, one row per resolution, plus a `provenance` summary and a
+  top-level `scope` stating what the graph covers) for agents
+  that want to query structure rather than read prose.
+- Refreshed automatically after full/delta index passes and watcher-indexed
+  changes (atomic writes, coalesced and rate-limited under bursts).
+- Regenerate on demand: `status(action="report")` (MCP), `civyk-repoix report`
+  (CLI, `--print` to stdout), or the `/repoix-map` skill (see below).
+- The header states generation time and index freshness so staleness is
+  always visible.
 
 ______________________________________________________________________
 
 ## Deep Wiki — Auto-Generated Docs Your Agent Can Query
 
-**A Devin DeepWiki–style knowledge base for your repo, generated by any OpenAI-compatible
-model (OpenAI, Minimax, OpenRouter, local servers, …) and queryable over MCP/CLI.**
+**A Devin DeepWiki–style knowledge base for your repo — built either by your agent's own
+session LLM via the `/repoix-wiki` skill (no API key needed) or by any OpenAI-compatible
+model (OpenAI, Minimax, OpenRouter, local servers, …) — and queryable over MCP/CLI.**
+
+> **New: agent-session generation.** `/repoix-wiki` drives `wiki(action="plan")` →
+> `page_context` → `save_page`: the tools own page identity (a **pinned plan of record** —
+> ids never churn between builds), staleness, grounding, and storage; your agent writes and
+> *surgically edits* the prose. Works without `wiki.enabled`, the `[llm]` extra, or any
+> API credential. Wikis maintained this way are protected from automatic API-LLM rebuilds.
 
 The `wiki` tool builds a structured, navigable wiki grounded in your actual code via semantic
 retrieval (RAG). Each page type has its **own aspect-specific sections** (overview, architecture,
@@ -190,8 +183,11 @@ and Examples**. Overview and architecture are synthesized **bottom-up** from per
 consistency. Each page carries **`[path:Lstart-Lend]` citations to real files**, relevance-gated
 inline **Mermaid diagrams**, a human `README.md` landing page (navigation + per-page table) with a
 0–100 **quality score**, and a machine-readable `manifest.json`. The **module page set is planned
-dynamically by the LLM** from the real source tree, while code guarantees ~100% source coverage and
-prunes pages that leave the plan.
+dynamically by the LLM** from the real source tree, while code guarantees ~100% coverage of the
+**production surface** (every indexed source file except test code — tests *ground* pages via the
+Examples page and each page's "tests covering this code" block, rather than being documented as
+subsystems; set `wiki.include_tests: true` for a repo whose product is a test suite) and prunes
+pages that leave the plan.
 
 **Inline diagrams** (embedded in each page, **only when they add meaning** — trivial single-node or
 edgeless graphs and short sequence diagrams are dropped):
@@ -238,10 +234,23 @@ identical system prefix across all pages so providers can serve it from their pr
 - **Graceful degradation:** with no LLM configured it still produces structural pages + deterministic
   diagrams, and `ask` returns retrieval-only results.
 
-### Recommended setup
+### Two ways to build the wiki
 
-For the best wiki + `ask` quality, install the **embeddings** extra (semantic retrieval) alongside
-the **llm** extra and point generation at a capable chat model:
+**1. Agent-written (default; no API key, no LLM config).** Run **`/repoix-wiki`** in your
+agent. The session's own model writes the prose; the tools own page identity, staleness,
+grounding, citation validation, and storage. Nothing in `generation` or `wiki.enabled` is
+consulted — those gate only the API-LLM path below. Skills are a cross-agent standard, so
+this works in Claude Code, Cursor, Windsurf, and Copilot alike.
+
+```bash
+pip install "civyk-repoix[embeddings]"   # semantic retrieval; no llm extra needed
+civyk-repoix init                        # installs the skills
+civyk-repoix rebuild
+# then, in Claude Code:  /repoix-wiki
+```
+
+**2. API-LLM (headless).** Needed when no agent is in the loop — CI/scheduled builds and
+the `ask` answer/deep modes. Point `generation` at a chat model and opt the wiki in:
 
 ```bash
 # 1. Install with semantic embeddings (sentence-transformers) + the OpenAI SDK
@@ -252,16 +261,25 @@ export CIVYK_LLM_API_KEY=...
 
 # 3. Initialize the repo (creates memory/codebase-index/config.yaml) and index it
 civyk-repoix init
-civyk-repoix status --action reindex          # builds the semantic index
+civyk-repoix rebuild                          # builds the semantic index
 
 # 4. In memory/codebase-index/config.yaml set:
 #      daemon.embedding_backend: auto          # -> local sentence-transformers when installed
-#      generation.enabled: true
-#      generation.model: MiniMax-M3            # default; any OpenAI-compatible model
-#      wiki.enabled: true
+#      generation.provider: minimax            # REQUIRED: any value other than the default
+#                                              # `copilot` selects the OpenAI-compatible client
+#      generation.base_url: https://api.minimax.io/v1
+#      generation.model: MiniMax-M3            # any model that endpoint serves
+#      wiki.enabled: true                      # gates the API-LLM/auto path only
+#    (`provider` SELECTS the client. While it is `copilot` — the default — base_url and
+#     CIVYK_LLM_API_KEY are ignored and every call goes to GitHub Copilot. An LLM counts
+#     as configured once a provider+model resolve with a credential — there is no separate
+#     generation.enabled switch)
 civyk-repoix query wiki --action generate
 civyk-repoix query wiki --action ask --query "how does indexing work" --mode answer
 ```
+
+Once a wiki is agent-written, automatic API-LLM rebuilds skip it (they would overwrite the
+agent's prose); an explicit `wiki(action="generate")` hands it back to the API path.
 
 **Why the embeddings extra matters:** without it the embedding backend falls back to **tf-idf**
 (keyword-only), which weakens `ask` retrieval. With `sentence-transformers` installed,
@@ -292,7 +310,10 @@ the client strips automatically, so output stays clean; `generation.max_output_t
 | **Anthropic** | `claude-sonnet-4-6` | `https://api.anthropic.com/v1` | ↓ `claude-haiku-4-5` / ↑ `claude-opus-4-8` |
 
 ```bash
-# Switch provider by overriding three values (key always via env):
+# Switch provider by overriding four values (key always via env). CIVYK_LLM_PROVIDER is
+# REQUIRED: it selects the client, and while it stays `copilot` (the default) the base_url
+# and the API key below are ignored and the calls still go to GitHub Copilot.
+export CIVYK_LLM_PROVIDER=openai   # any value but `copilot` => the OpenAI-compatible client
 export CIVYK_LLM_BASE_URL=https://api.z.ai/api/paas/v4
 export CIVYK_LLM_MODEL=glm-4.6
 export CIVYK_LLM_API_KEY=...
@@ -344,95 +365,83 @@ empty — streaming lifts the ceiling to the model's full output limit (e.g. 64k
 4.6), so large pages generate completely. Tune `generation.max_output_tokens` to how long pages
 should run and keep `generation.timeout_s` comfortably above the time to generate that many tokens
 (it bounds total wall-clock per streamed call). Copilot also throttles concurrent requests per
-token, so a low `generation.max_concurrency` / `wiki.concurrency` (≈2) builds most reliably. Set
+token, so a low `wiki.concurrency` (≈2) builds most reliably. Set
 `generation.stream: false` only for an endpoint that doesn't support SSE.
 
 ______________________________________________________________________
 
-## Conversation History — Context Across Sessions
+## Agent Setup
 
-**Your AI assistant remembers conversation context across sessions and compactions.**
+`civyk-repoix init` gives each agent three things: an MCP server entry so the tools are
+callable, a rules file so the agent knows they exist, and the agent skills.
 
-When Claude Code or other AI agents hit context limits, they compact conversations — losing valuable context. With Civyk Repo Index's Conversation History, your discussions persist:
+| Agent | MCP config | Rules file | Skills read from |
+|-------|-----------|------------|------------------|
+| Claude Code | `.mcp.json` | `.claude/rules/civyk-repoix.md` | `.claude/skills/` |
+| Cursor | `.cursor/mcp.json` | `.cursor/rules/civyk-repoix.mdc` | `.cursor/skills/`, `.claude/skills/` |
+| Windsurf | `.windsurf/mcp.json` | `.windsurf/rules/civyk-repoix.md` | `.windsurf/skills/` |
+| GitHub Copilot | `.vscode/mcp.json` | `.github/copilot-instructions.md` | `.github/skills/`, `.claude/skills/` |
 
-```text
-Session 1:  AI discusses auth refactor → conversation logged
-[Compaction happens]
-Session 2:  AI calls conversation(action="context") → restores key decisions and goals
-```
+The rules file is written in whatever form the agent actually loads: Cursor ignores a
+`.cursor/rules` file that carries no frontmatter (hence `.mdc` with `alwaysApply: true`),
+and a Windsurf rule needs an explicit `trigger` to be always-on.
 
-### Conversation Tools
+The civyk block inside that file is *managed*: re-running `init` refreshes it in place
+(so an upgraded repo stops advertising tools a release removed) and leaves everything you
+wrote around it untouched. It is deliberately short — it is injected into every session,
+where it competes with your own instructions. The full playbook lives in the `repoix`
+skill, which the agent loads only when a discovery-shaped task actually appears.
 
-| Tool | Purpose |
-|------|---------|
-| `conversation(action="list")` | Find recent sessions to restore context |
-| `conversation(action="history")` | Retrieve turns from a specific session |
-| `conversation(action="context")` | Build token-budgeted context from session history |
-| `conversation(action="search")` | Full-text search across all past conversations |
+Agent skills are a cross-agent standard, so `init` installs them for every configured
+agent whose skills directory is documented (the four above) — not just Claude. An agent
+with no published skills directory gets the MCP server and the rules file, and `init`
+says which agents it skipped rather than guessing at a path.
 
-> **Hook Integration**: Conversation logging integrates with Claude Code hooks to automatically capture prompts and tool usage.
-
-______________________________________________________________________
-
-## AI Cache Hooks — Session Continuity & Cache Hints
-
-Civyk Repo Index installs a small set of Claude Code hooks. Everything they surface is delivered through Claude Code's `additionalContext` channel, so it actually reaches the model — a hook's `systemMessage` goes to the user terminal only and is never sent to the model:
-
-```mermaid
-flowchart TD
-    A["SessionStart (startup / resume / compact)"] -->|additionalContext| B["Injects compact usage brief + AI-cache status + restored conversation context"]
-    R["PreToolUse: Read a cached file"] -->|additionalContext| RH["Recall hint: understand(recall) before re-reading"]
-    S["PreToolUse: Grep/Glob for a symbol"] -->|additionalContext| SH["Semantic nudge: search(symbols) / callers / explore (max 1 per 10 min)"]
-    W["PostToolUse: Edit/Write a cached file"] -->|additionalContext| WH["Refresh hint: understand(store) — cache now stale"]
-    C["UserPromptSubmit / PostToolUse"] --> D["Log prompt & tool usage to conversation history"]
-    G["Stop"] --> H["Finalizes the session record"]
-```
-
-> **The per-file hints are deliberately rare.** They fire only for a **model-authored** cached understanding (one you previously stored with `understand(store)`): `check-cache` on Read, `refresh-cache` when you Edit/Write a file whose stored understanding your edit may have outdated. The indexer auto-populates a thin structural understanding for every indexed file; those auto stubs are treated as a miss, so the hints don't fire on ordinary reads/edits. Each is one concise line via `additionalContext`, and **advisory** — the model receives it but is free to act or ignore it (it does not block the tool; for a hard guarantee you'd need a blocking `PreToolUse` deny). Earlier builds emitted these as `systemMessage` — invisible to the model yet noisy on *every* read; that is fixed, and the always-on `remind-store`/`persist-learnings`/`save-compact` nudges were dropped.
-
-### Supported Agents
-
-| Agent | MCP | Hooks | Config Location |
-|-------|-----|-------|-----------------|
-| Claude Code | Yes | Yes | `.claude/settings.json` |
-| Cursor | Yes | Yes | `.cursor/hooks.json` |
-| Windsurf | Yes | Yes | `.windsurf/hooks.json` |
-| GitHub Copilot | Yes | Yes | `.github/hooks/` |
-
-### Setup
-
-Hooks are configured automatically during setup:
+Because several agents read each other's directories, the skills are installed into the
+directories that cover each configured agent **exactly once** — never twice: configure
+Claude and Cursor together and both are served from `.claude/skills` alone; configure
+Cursor alone and the skills land in `.cursor/skills` (its own directory, not a `.claude/`
+one that belongs to an agent you don't use). `init` prints the resulting directory → agent
+map. (Real files, not symlinks: Cursor won't follow a link out of its own tree, VS Code
+rejects a linked skills directory, and git cannot commit a junction.)
 
 ```bash
-civyk-repoix init              # Configures MCP + hooks + project skill + permission allow
-civyk-repoix init --no-hooks   # Skip hook configuration
-civyk-repoix init --no-skill   # Skip the project-scope agent skill
+civyk-repoix init              # MCP + rules file + skills + permission allow
+civyk-repoix init --no-skill   # skip the project-scope agent skills
 ```
 
-> **Conversation continuity**: SessionStart hooks reinject prior context after resume/compaction so long sessions keep the thread, and the logging hooks build a searchable history (see the `conversation` tool).
+> **Upgrading from 1.x?** The hooks subsystem is gone. `init` strips the stale hook
+> entries from your agent config, and any hook that fires before you re-run `init`
+> removes them itself — so nothing breaks either way. Your own hooks are left alone.
 
-### Making Agents Actually Use the Index — the `repoix` Skill
+### Making Agents Actually Use the Index — Report, Skills, Permissions
 
 Static instructions decay over long sessions, so agents drift back to grep and re-discover
 the same code every session. Three layers counter that:
 
-1. **The `repoix` skill** — a decision-time playbook (when to use the semantic tools vs
-   grep, scenario recipes, CLI fallback, freshness rules) that the agent loads when a
-   discovery-shaped task appears. Embedded in the executable; install once for all your
-   projects:
+1. **The static report** (`memory/codebase-index/REPORT.md`) — orientation via a plain
+   file Read, the one interface every agent already prefers. No tool-selection decision
+   for the model to get wrong.
+
+2. **Three embedded skills**, surfaced at decision time rather than injected up front:
+   `repoix`, a playbook (report-first defaults, task→tool routing, CLI fallback,
+   freshness rules) the agent loads when a discovery-shaped task appears; `repoix-map`
+   (`/repoix-map`), a user-invoked orientation flow that indexes if needed, refreshes the
+   report, and summarizes it; and `repoix-wiki` (`/repoix-wiki`), which builds the deep
+   wiki with the current session's model — no API key. All three are embedded in the
+   executable and installed together:
 
    ```bash
-   civyk-repoix skill install                   # user scope (~/.claude/skills)
-   civyk-repoix skill install --scope project   # this project only (also done by init)
-   civyk-repoix skill status                    # installed versions per scope
+   civyk-repoix skill install                          # user scope, Claude (~/.claude/skills)
+   civyk-repoix skill install --agent cursor-agent     # user scope, Cursor (~/.cursor/skills)
+   civyk-repoix skill install --scope project          # this project only (also done by init)
+   civyk-repoix skill status --agent claude,windsurf   # installed versions per scope & skill
    ```
 
-   Installs are version-stamped — re-running after an upgrade refreshes the skill.
-
-2. **The `suggest-repoix` nudge** (Claude, PreToolUse `Grep|Glob`) — when a search pattern
-   looks like symbol discovery, one `additionalContext` line points at
-   `search(action="symbols")` / `symbol(action="callers")` / `explore`. Rate-limited to
-   once per 10 minutes; never fires for literal/regex searches (grep is right there).
+   `--agent` accepts a comma-separated list (repeatable) and defaults to `claude`; the
+   directories are resolved the same way `init` resolves them. Installs are
+   version-stamped — re-running after an upgrade refreshes the skills. `skill status`
+   warns when a user-scope copy shadows this project's, which Claude Code allows it to do.
 
 3. **Zero permission friction** — setup pre-allows the `mcp__civyk-repoix` server in the
    project settings, so a semantic call never costs a prompt that a plain grep doesn't.
@@ -466,7 +475,6 @@ graph LR
 - **Indexer** — Tree-sitter parsing, symbol extraction
 - **Context Builder** — Token-budgeted context generation
 - **Embedding Engine** — Vector embeddings with 3-backend fallback (sentence-transformers, API, TF-IDF)
-- **Conversation Manager** — Session tracking and history persistence
 - **Tool Health Tracker** — Auto-disables failing tools, re-enables after cooldown
 
 ### Dual Interface
@@ -487,9 +495,9 @@ Use tools directly without MCP protocol:
 ```bash
 civyk-repoix query search --action symbols --query "%User%" --kind class
 civyk-repoix query context --action task --task "implement auth" --token-budget 1000
-civyk-repoix query conversation --action list --days 7  # View recent sessions
+civyk-repoix query config --action list  # Show every setting and its effective value
 civyk-repoix query --schema  # Get JSON schema of all tools
-civyk-repoix skill install   # Install the agent skill (see AI Cache Hooks section)
+civyk-repoix skill install   # Install the agent skills (repoix, repoix-map, repoix-wiki)
 ```
 
 **Tool Name Mapping:** MCP uses `snake_case` (e.g., `search`), CLI uses `kebab-case` (e.g., `search`). Actions are passed via `--action`.
@@ -500,14 +508,13 @@ ______________________________________________________________________
 
 Location (per-repo, auto-created on first daemon run, **takes precedence**):
 `<repo>/memory/codebase-index/config.yaml`. Falls back to the global default
-`~/.config/civyk-repoix/config.yaml`. Edit the per-repo file to set `generation`/`wiki`.
-(Note: `memory/config.json` is a separate file for hooks/conversation settings only — wiki
-settings do **not** go there.)
+`~/.config/civyk-repoix/config.yaml`. Edit the per-repo file to set `generation`/`wiki`,
+or change settings without touching files via `civyk-repoix query config --action set`.
 
 ```yaml
 index:
   max_file_size_mb: 10
-  debounce_ms: 500
+  debounce_ms: 5000
 
 daemon:
   max_workers: 10
@@ -522,8 +529,7 @@ context:
 # editor's Copilot sign-in). For an OpenAI-compatible API instead, set provider +
 # base_url and put the key in the CIVYK_LLM_API_KEY env var only — never in this file.
 generation:
-  enabled: false
-  provider: copilot                     # GitHub Copilot adapter (or "openai"/"minimax" for an API)
+  provider: copilot                     # SELECTS the client: GitHub Copilot adapter, or "openai"/"minimax" for an API
   base_url: https://api.minimax.io/v1   # OpenAI-compatible endpoint (ignored when provider=copilot)
   model: claude-opus-4.8                # PREMIUM Copilot model; claude-haiku-4.5 = always-available + fast
   embedding_model: ""   # optional; enables the "openai" embedding backend
@@ -539,6 +545,7 @@ wiki:
   steering: true               # honor memory/deep-wiki/steering.yaml (owner notes/pages/emphasis/excludes)
   lint_llm: false              # wiki lint: also run the LLM contradiction/duplication pass
   max_files_per_page: 40       # split a module page into child pages above this many files
+  include_tests: false         # document test code as module pages (see below)
 ```
 
 > **`incremental_edits` (on by default)** keeps delta rebuilds quiet. On a delta build, a page
@@ -563,10 +570,10 @@ wiki:
 | `REPOIX_PARSE_WORKERS` | CPU count | Parallel parsing workers |
 | `REPOIX_CACHE_TTL` | 60 | Query cache TTL (seconds) |
 | `CIVYK_EMBEDDING_BACKEND` | auto | Embedding backend: `auto`, `local`, `api`, `tfidf`, `openai` |
-| `CIVYK_LLM_API_KEY` | — | API key for the OpenAI-compatible LLM (deep wiki). **Secret — env only** |
-| `CIVYK_LLM_BASE_URL` | — | Base URL of the OpenAI-compatible endpoint (e.g. Minimax) |
+| `CIVYK_LLM_API_KEY` | — | API key for the OpenAI-compatible LLM (deep wiki). Ignored when the provider is `copilot`. **Secret — env only** |
+| `CIVYK_LLM_BASE_URL` | — | Base URL of the OpenAI-compatible endpoint (e.g. Minimax). Ignored when the provider is `copilot` |
 | `CIVYK_LLM_MODEL` | — | Chat model id used for wiki generation/Q&A |
-| `CIVYK_LLM_PROVIDER` | openai | Provider label (informational) |
+| `CIVYK_LLM_PROVIDER` | copilot | **Selects the LLM client**, not a label: `copilot` uses the built-in adapter (and ignores `CIVYK_LLM_BASE_URL`/`CIVYK_LLM_API_KEY`); any other value (`openai`, `minimax`, …) uses the OpenAI-compatible client. Set it whenever you point at an API |
 | `CIVYK_LLM_EMBEDDING_API_KEY` | — | Optional separate key for the `openai` embedding backend (falls back to `CIVYK_LLM_API_KEY`) |
 | `CIVYK_LLM_EMBEDDING_MODEL` | — | Embedding model id for the `openai` backend |
 | `CIVYK_WIKI_ENABLED` | false | Enable deep-wiki generation |

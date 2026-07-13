@@ -5,6 +5,273 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [2.0.0] - 2026-07-13
+
+A ground-up re-architecture. 2.0 removes three speculative subsystems — hooks,
+conversation history, and the AI understanding cache — and rebuilds the core
+around what agents demonstrably use: a deterministic, evidence-graded code
+index, agent skills for every skill-capable agent, and a self-healing deep
+wiki. Every ranking, diagram, and coverage number now traces to verifiable
+evidence; upgrades heal themselves; and per-session LLM cost drops because
+nothing generates speculative content nobody reads. Simple, deterministic,
+low-maintenance — by design.
+
+### Removed
+
+- **The AI understanding cache** (`understand` tool with store/recall/stats/
+  invalidate, the indexer's auto-generation tier, understanding embeddings,
+  and the wiki mirror; 15 tools → 14). Measured on this repo: every one of its
+  207 rows was indexer-generated boilerplate (first docstring paragraphs),
+  none was agent-authored, and recalls were effectively zero — pure storage,
+  embedding, and maintenance cost with no reads. Durable knowledge now lives
+  where it is actually consumed: the committed deep wiki (plus Research Notes)
+  for prose, `remember` for decisions and conventions, and
+  `file(action="symbols")` for cheap file orientation. Schema 2.9.0 drops the
+  `ai_understanding` and `understanding_embeddings` tables on first open.
+- **The hooks subsystem.** Its only two useful handlers fired solely for
+  model-authored understanding entries that never existed; the rest were
+  nudges agents ignored. Skills do the one job hooks did well — surfacing
+  repoix at decision time — in every skill-capable agent, not just Claude.
+- **The `conversation` tool and its history database.** It was fed entirely by
+  hook data, so without hooks it could only return empty results.
+- **Config keys read by nothing**: `generation.enabled`,
+  `generation.max_concurrency`, `wiki.deep_research`. Old config files
+  carrying them still load (unknown keys are ignored).
+
+### Added
+
+- **Agent skills for every skill-capable agent** — Claude, Cursor, Copilot,
+  and Windsurf all get `repoix`, `repoix-map`, and `repoix-wiki`, installed
+  into directories chosen so each configured agent discovers each skill
+  exactly once (overlapping read paths collapse; `init` prints the
+  directory → agent map). `skill install`/`skill status` take `--agent`, and
+  `status` reports every directory an agent actually reads.
+- **A rules file for every agent, in the form that agent loads** — `.mdc`
+  with `alwaysApply` for Cursor, a `trigger` for Windsurf. The always-loaded
+  rules block itself shrank to a fifth of its size (~4,000 → ~2,300 chars):
+  routing rules only, with the manual in the `repoix` skill.
+- **Edge provenance — a guess is never presented as a fact.** Every reference
+  edge records how it was resolved (`local`/`import`/`unique`/`ambiguous`);
+  rankings, diagrams, and impact analysis use evidence-backed edges only.
+- **`memory/codebase-index/graph.json`** — the file-level dependency graph as
+  a machine-readable artifact beside REPORT.md: weighted, resolved,
+  provenance-tagged file→file edges over production code, tests excluded. The
+  rules block and skills route "what depends on what, file by file" to it.
+- **Wiki pages grounded in the reference graph** — each page carries its own
+  file→file edges in both directions with the resolution mix stated.
+- **`wiki.include_tests`** (default `false`) — first-class wiki pages for
+  repos whose product genuinely is a test suite.
+
+### Fixed
+
+The index, the report, the wiki, and the upgrade path were audited end to end;
+the defects below shipped in 1.x and are all covered by regression tests.
+
+- **Index correctness.** One reference now creates one edge (previously every
+  same-named symbol in the repo got one, inflating fan-in/fan-out, component
+  dependencies, and impact analysis). Module-style imports (`import utils`)
+  contribute resolution evidence; module keys are anchored so `import config`
+  cannot resolve into an unrelated `config.py`; relative imports resolve
+  against the importer's package; every module in `import os, pkg.mod` is
+  recorded. Test detection is one implementation for all callers —
+  `is_test_path` is registered as a SQLite function, ending three-way drift
+  between Python, SQL `LIKE`, and `fnmatch` semantics across OSes.
+- **Report and rankings.** Schema 2.7.0 force-re-resolves edges that predate
+  provenance (on this repo: 15,471 evidence-free edges → 0, ~6,900 phantom
+  edges gone), so REPORT.md no longer crowns `close`/`get`/`set` as the
+  codebase's most central symbols. Rankings count production references only
+  (91–97% of "refs" were test calls); entry points admit attribute-dispatched
+  methods; homonyms keep separate evidence; production files whose names
+  merely contain "test" are no longer silently dropped. Edge classification
+  is 7.3× faster at scale.
+- **Wiki integrity.** A decomposed module family is recognized by its
+  children, so re-chunked modules retire superseded pages instead of
+  accumulating six overlapping ones; the agent build path now prunes, writes
+  `digests.json`, honors `steering.yaml` exclusions, and plans structurally
+  and offline — deterministically, with no LLM call — ending plan churn and
+  duplicate pages. Coverage has one definition across build, `wiki status`,
+  and lint. The write lock heartbeats (a long build is no longer judged
+  stale), detects dead holders correctly on Windows, and survives two writers
+  racing over a crashed holder's lock. A half-built index no longer prunes
+  pages whose files are still on disk; the dead-link lint now resolves links
+  for real (it previously skipped exactly the links that were dead); an
+  embedding-backend change is reported with the fix instead of masquerading
+  as an empty wiki; `plan` is gated by `default_branch_only` like `generate`;
+  `wiki.enabled` no longer flips to `true` when a config file loads; agent
+  pages load the persisted business context; and the wiki no longer documents
+  its own test suite as the product's largest subsystem.
+- **Upgrade safety.** A 1.x index opens cleanly (index creation no longer
+  references a column only the migration adds). Stale hook entries
+  self-remove: `civyk-repoix hooks …` short-circuits before argparse and
+  exits 0, so a leftover hook can never block an agent action. The rules-file
+  refresh proves the civyk block's extent before replacing it — a hand-edited
+  block is left byte-for-byte untouched — is fence-aware, retrofits missing
+  frontmatter, and cleans up retired 1.x rules paths. The hook prune reports
+  only removals it actually made.
+
+### Changed
+
+- **`profile="minimal"` is an alias of `"core"`** and the "specialist" tier is
+  gone; the 14 tools are `core` (8) and `extended` (6).
+- **`wiki.retrieval_top_k` is now actually used** — the tool's `top_k` falls
+  back to the configured value instead of a hardcoded 20.
+
+### Migration
+
+- **Nothing to do.** `init` strips stale hook entries (and a stale hook that
+  fires first removes them itself), refreshes the rules block in place, and
+  the index re-resolves itself once on the next pass. Schema 2.9.0 drops the
+  understanding tables automatically on first open. `memory/conversations/`
+  is left on disk untouched — delete it if you want the space back. An
+  existing wiki heals its plan of record on the next ordinary build; no
+  `--replan` needed.
+
+## [1.12.0] - 2026-07-12
+
+### Added
+
+- **Pinned wiki plan of record** — the stored page set is now authoritative
+  across rebuilds: pages keep their `page_id` (hysteresis), new subsystems
+  arrive as *add* amendments, pages with vanished sources are *retired*, and
+  every structural change is logged to `memory/deep-wiki/plan-log.jsonl`
+  with a drift signal when the structure churns. `replan=true`
+  (generate/plan) is the escape hatch: fresh structure wins, old pages are
+  remapped to successors by source overlap so prose carries forward. Under
+  LLM planning, page identity is now derived from the dominant directory of
+  the assigned files — LLM names survive only as display titles, ending the
+  page-rename churn that defeated the reuse cache.
+- **Agent-session wiki generation (no API key)** — new `wiki` actions
+  `plan` (pinned pages + amendments + dependency-ordered stale build list),
+  `page_context` (per-page grounding, citation seeds, prior markdown), and
+  `save_page` (citation-validated, atomically written, hash-stamped,
+  re-embedded). The calling agent writes the prose; the tools own identity,
+  staleness, grounding, and storage. Works without `wiki.enabled` or an LLM
+  credential.
+- **`repoix-wiki` skill** — user-invoked `/repoix-wiki` flow over those
+  actions: plan → report amendments/drift → write or surgically edit stale
+  pages bottom-up → save → lint, capped per invocation with explicit
+  continuation. The API-LLM `generate` path remains for headless/CI use.
+- **`repoix` playbook: artifact routing** — new "Which artifact for which
+  question" section (REPORT.md / wiki ask / graph tools / grep) plus
+  staleness advice pointing at `/repoix-map` and `/repoix-wiki`.
+- **`skill show --skill <name>`** — inspect any embedded skill; skill CLI
+  help now documents that installs cover all three skills.
+- **REPORT.md test-suite overview** — a `## Tests` section (test file/function
+  counts, per-directory layout, largest test files, pointer to
+  `tests(action="recommended")`) so agents working on tests orient from the
+  same one-read artifact.
+- **REPORT.md layout fallback** — when keyword-based component detection
+  covers <50% of source files, the report renders a directory map derived
+  from actual paths instead of a misleading near-empty components table.
+
+### Fixed
+
+- **Windows-style path lookups on POSIX** — `_normalize_path` converts
+  backslashes explicitly, so cached-understanding checks (and any DB path
+  query) match rows regardless of the caller's path separators.
+- **CLI query dropped long-running responses** — `civyk-repoix query` read a
+  single protocol frame, so on calls longer than the keepalive interval the
+  worker's `internal.ping` was mistaken for the response ("No response from
+  worker" while the worker completed). The CLI now skips keepalive frames
+  under a 300s overall deadline.
+- **Wiki plan of record now pins on first contact** — `wiki(action="plan")`
+  persists skeleton rows for not-yet-stored module pages (and, after a
+  replan, for the replanned structure), so page ids handed out by `plan`
+  can never vanish before `page_context`/`save_page`. Decomposed families
+  are pinned too: the parent stores its children in `related_pages` and
+  reconciliation reconstructs stored families instead of letting the
+  planner re-decompose differently on every call. The drift signal now
+  counts only module-level churn, not first-appearance records of
+  deterministic pages.
+- **REPORT.md ranked test scaffolding and homonyms** — entry points and
+  fan-in/fan-out excluded nothing: thousands of exported test defs drowned
+  the real entry points, and name-resolved reference edges repeated the
+  same symbol name at multiple files with inflated counts. Test paths are
+  now excluded, only function/class/method kinds rank, homonyms collapse to
+  the highest-degree definition, and component dependencies skip the test
+  layer and count distinct referencing symbols.
+
+### Reliability (wiki deep-review hardening)
+
+- **Cross-process wiki write lock** — generate, save_page, and replan
+  application hold an advisory lock file (stale-detected by pid/age), so a
+  CLI/standalone-server writer can no longer interleave with a daemon
+  background build; in-daemon writers additionally serialize on the build
+  lock for the build's full duration.
+- **Agent-maintained wikis are protected** — automatic (threshold and
+  scheduled) API-LLM builds skip a wiki whose last writer was an agent
+  session; an explicit `wiki(action="generate")` hands it back.
+- **Agent saves keep artifacts truthful** — save_page refreshes the wiki
+  index/manifest and wiki_state (page count, last-built, model), computes
+  its reuse-cache hash with the same inputs as the generator (so unchanged
+  agent pages take the free reuse path in later builds), and re-flags
+  synthesis pages stale via a sentinel that works even for zero-source
+  pages.
+- **Replan application is atomic** — remap upserts and prunes commit in one
+  transaction (Database.transaction now supports join-outer nesting), file
+  ops follow the commit; a mid-replan crash can no longer pin both an old
+  page and its successor.
+- **Replan audit completeness** — two old pages merging into one successor
+  now record a retire amendment for the loser; an emptied catch-all page is
+  retired instead of living forever; the plan audit log is branch-scoped
+  (memory/deep-wiki/<branch>/plan-log.jsonl) and rotates.
+- **Gates** — plan(replan=true) honors default_branch_only like the other
+  mutating actions; the skill documents targeted single-page rebuilds and
+  the one-time --replan migration for wikis predating plan pinning.
+
+## [1.11.0] - 2026-07-12
+
+### Added
+
+- **Static repo report (`REPORT.md`)** — a pre-digested structural overview
+  (components, dependencies, likely entry points, fan-in/fan-out symbols,
+  change hotspots) written to `memory/codebase-index/REPORT.md` and refreshed
+  automatically after every full or delta index pass. Any agent can orient
+  itself with a single file read, in any client, with no MCP setup.
+  Regenerate on demand with `status(action="report")` (MCP) or the new
+  `civyk-repoix report` CLI command (`--print` echoes it to stdout).
+- **`repoix-map` skill** — a user-invoked `/repoix-map` orientation flow:
+  index if needed, refresh the report, summarize it, and set report-first /
+  graph-second defaults for the session. Installed alongside `repoix` by
+  `civyk-repoix skill install` and `civyk-repoix init`.
+- **OR + substring symbol search** — `search(action="symbols")` now treats
+  bare terms as substrings (`"UserService"`), honors SQL wildcards when
+  present (`"get_%"` — expert mode, used verbatim and never split), and
+  supports `|` OR alternatives (`"save|store"`), removing the LIKE-syntax
+  sharp edge that pushed agents back to grep. Normalization lives in the
+  agent-facing handler; internal callers keep exact LIKE semantics, and the
+  repository accepts an explicit pattern list.
+- `civyk-repoix report` CLI command (`--print` echoes the report), plus a
+  shared `report_result` helper used by both MCP dispatchers.
+
+### Changed
+
+- **Instruction surface collapsed and reframed** — the CLAUDE.md template is
+  now a short report-first directive; the `repoix` skill's mandatory shouting
+  ("MANDATORY", "you MUST") became positively framed defaults; the session
+  brief, the init-installed instruction block, and the grep nudge now lead
+  with `REPORT.md` before tool routing.
+
+### Reliability (deep-review hardening)
+
+- Report generation runs off the daemon event loop (asyncio.to_thread) and
+  writes atomically (tmp + rename), so MCP requests never stall behind git
+  churn analysis and readers never see a torn file.
+- Report regeneration is serialized per repo with coalescing (single writer,
+  bounded trailing regens), rate-limited to one unforced regen per 60s, and
+  deferred/failed refreshes are flushed by the periodic delta pass — the
+  last indexed change always lands in the report.
+- Staging force-rebuilds publish the report only after the atomic index swap
+  commits; watcher-indexed changes (the primary live path) refresh the
+  report too; a missing REPORT.md materializes on the next delta pass.
+- Report content is source-filtered (no docs/lockfile noise in hotspots or
+  entry points), stamped with generation time vs index freshness honestly,
+  and uses pre-aggregated edge scans plus a bounded dependency query.
+- CLI `report` gives a specific database-is-locked hint instead of a
+  traceback; `status(action="report")` returns structured errors.
+
 ## [1.10.1] - 2026-07-11
 
 ### Changed
