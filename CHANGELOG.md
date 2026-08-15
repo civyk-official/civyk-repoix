@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-08-15
+
+### Fixed
+
+- **Daemon instances no longer pile up.** Three compounding lifecycle defects
+  let orphaned `daemon start --foreground` processes accumulate (observed: 10
+  live daemons for 2 IDE windows):
+  1. A start that found the daemon already running fell through to
+     `manager.stop()` in the foreground CLI's cleanup, overwriting the shared
+     state file with `"stopped"` while the real daemon kept serving — blinding
+     the singleton guard for every later start.
+  2. With the state file lying, a duplicate start proceeded to bind the control
+     port; the Windows port-exclusion fallback then silently bound an
+     OS-assigned port, so the duplicate served forever instead of exiting.
+  3. The availability probe used a 1-second identity-handshake timeout, which
+     false-negatives whenever the daemon is busy (e.g. mid-index), so each new
+     MCP session or CLI query spawned another duplicate.
+  The singleton is now an OS-level exclusive file lock (`daemon.lock`) held
+  for the daemon's lifetime and released by the OS on process death — it can
+  neither go stale like the state file nor time out like a socket probe. A
+  start that cannot take the lock raises `DaemonAlreadyRunningError` and the
+  CLI exits without teardown (previously that teardown corrupted the state
+  file). Defense-in-depth for daemons predating the lock:
+  `start_server(exclusive=True)` probes a conflicting control port for an
+  identity-matched daemon and raises `AlreadyServingError` instead of falling
+  back to an OS-assigned port (the fallback remains for genuine Windows port
+  exclusions and foreign conflicts). The daemon binds its control socket
+  before touching the state file, `stop()` refuses to flip the shared state
+  file unless the calling process is the recorded daemon, and daemon-liveness
+  probes now allow 5 seconds for the identity greeting. A side effect of the
+  pile-up is also gone: many daemons sharing one `daemon.log` broke Windows
+  rename-based log rotation, freezing the log at its size cap.
+- **The daemon self-heals a dead control listener.** Live soak-testing the
+  singleton fix surfaced a pre-existing co-contributor to the pile-up: on
+  Windows, a client aborting mid-accept (`WinError 64`, easy to hit while the
+  event loop is starved by indexing) makes asyncio's proactor close the
+  LISTENING socket permanently — the daemon process keeps running but is
+  unreachable, looking "not running" to every probe (pre-fix: infinite
+  duplicate spawns; post-fix: the singleton lock would block replacements).
+  `SocketTransport.is_serving` now detects the closed listener (the `Server`
+  object still reports serving), and the daemon's health loop rebinds it;
+  after 3 consecutive rebind failures the daemon shuts down and releases the
+  singleton lock so a fresh daemon can take over. Workers already self-healed
+  through the existing health checks; the control socket was the only
+  unsupervised listener.
+- The MCP `initialize` handshake reports the real package version in
+  `serverInfo` instead of a hardcoded `1.0.0`.
+
 ## [2.0.0] - 2026-07-13
 
 A ground-up re-architecture. 2.0 removes three speculative subsystems — hooks,
