@@ -23,11 +23,12 @@ ______________________________________________________________________
 
 ## Local-First, Private, Secure
 
-**Your code never leaves your machine.** Civyk Repo Index is a fully local MCP server:
+**Local by default.** Indexing, search, context packs and the MCP tools run entirely on your machine:
 
-- **100% offline** — No cloud services, no API calls, no telemetry
+- **Offline by default** — No cloud services, no API calls, no telemetry unless you opt in
 - **Your data stays yours** — All indexes and caches stored locally in SQLite
 - **Works air-gapped** — Perfect for proprietary codebases and enterprise environments
+- **Cloud features are explicit opt-ins** — Deep-wiki generation/Q&A uses the LLM you configure (`CIVYK_LLM_API_KEY` or GitHub Copilot) and sends wiki prose plus the code context it grounds on. The optional decision model (`decision:` block, `CIVYK_DECISION_API_KEY`) sends retrieved wiki chunks for the ask filter and, only with `decision.send_source: true`, source bodies for ambiguous-reference resolution. Nothing is sent when these are unset.
 - **Free binaries** — Compiled binaries available via PyPI at no cost
 
 ______________________________________________________________________
@@ -114,7 +115,7 @@ ______________________________________________________________________
 | Tier | Tool | Actions | Purpose |
 |------|------|---------|---------|
 | **Core** | `status` | `check`, `reindex`, `perf_stats`, `report` | Index health, re-indexing, performance stats, REPORT.md regeneration |
-| **Core** | `search` | `symbols`, `code`, `definition` | Find symbols (substring / `A\|B` OR / LIKE), text patterns, and definitions |
+| **Core** | `search` | `symbols`, `code`, `definition`, `semantic` | Find symbols (substring / `A\|B` OR / LIKE), text patterns, definitions, and symbols by meaning (natural-language query over symbol embeddings) |
 | **Core** | `symbol` | `detail`, `references`, `callers`, `hierarchy`, `similar` | Symbol details, usage sites, call graphs, type hierarchy, similar symbols |
 | **Core** | `file` | `symbols`, `imports`, `related` | Per-file symbol listing, import analysis, related files |
 | **Core** | `files` | — | List/filter repository files |
@@ -581,6 +582,48 @@ wiki:
 | `CIVYK_WIKI_STEERING` | true | Honor `memory/deep-wiki/steering.yaml` |
 | `CIVYK_WIKI_LINT_LLM` | false | Wiki lint: run the LLM contradiction pass |
 | `CIVYK_WIKI_MAX_FILES_PER_PAGE` | 40 | Module-page decomposition threshold |
+| `CIVYK_DECISION_API_KEY` | — | API key for the optional decision model (TypeSafe Jev via OpenRouter by default). **Secret — env only** |
+| `CIVYK_DECISION_ENABLED` | false | Enable the decision-model client (each feature still has its own `decision.*` switch) |
+| `CIVYK_DECISION_BASE_URL` | OpenRouter | Decisions endpoint (`https://openrouter.ai/api/alpha/decisions`, or TypeSafe direct `https://api.typesafe.ai/v1/systemone`) |
+| `CIVYK_DECISION_MODEL` | typesafe/jev-1.13 | Decision model id (`jev-latest` on the direct TypeSafe API) |
+| `CIVYK_DECISION_SEND_SOURCE` | false | Consent to upload source bodies (required by `decision.resolve_edges`) |
+
+______________________________________________________________________
+
+### Optional decision model (TypeSafe Jev via OpenRouter)
+
+A decision model is not a chat LLM: it answers typed questions (pick one option, score
+on a rubric, true/false) with calibrated probabilities and generates no text. Civyk Repo
+Index can use one for narrow judgements the index cannot make deterministically. It is
+**off by default and opt-in per feature**; a default install makes no decision-model
+calls. Design, measurements and thresholds: `docs/design/jev-decision-model-plan.md`.
+
+```yaml
+decision:
+  enabled: false              # + CIVYK_DECISION_API_KEY env var (never in this file)
+  base_url: https://openrouter.ai/api/alpha/decisions   # or https://api.typesafe.ai/v1/systemone
+  model: typesafe/jev-1.13
+  send_source: false          # consent to upload source bodies (resolve_edges needs it)
+  ask_filter: false           # wiki ask: drop irrelevant/injected chunks; report coverage
+  search_rerank: false        # search(action="semantic"): rerank + "no confident match"
+  resolve_edges: false        # daemon post-index pass: re-bind ambiguous reference edges
+  lint_pairs: false           # wiki lint: LLM only explains pairs the model flags
+  max_calls_per_run: 500      # batch-pass bounds (cache hits are free)
+  max_tokens_per_run: 2000000
+```
+
+What each feature sends, and what it changes:
+
+| Feature | Sends | Effect |
+|---------|-------|--------|
+| `ask_filter` | the question and the retrieved wiki chunks | keeps only relevant chunks, excludes prompt injection, adds a note when the wiki does not cover the question; `decisions` block on the response |
+| `search_rerank` | the query and the shortlist's FQNs/docstrings | reorders the semantic shortlist; note when nothing fits |
+| `resolve_edges` (+ `send_source`) | the referencing symbol's body, its imports, candidate definitions | `ambiguous` edges become `model` (with confidence) or are deleted as external; `model` edges never count as evidence in rankings |
+| `lint_pairs` | page summaries for pairs sharing source files | the LLM contradiction pass only sees flagged pairs, or is skipped |
+
+Answers are cached by content hash in the index database, so repeated questions and
+re-indexes replay without spend. `scripts/eval_decisions.py` runs the vendor gate
+against your live index before you enable anything.
 
 ______________________________________________________________________
 
@@ -659,7 +702,7 @@ sigstore verify identity \
 - **Sigstore signing** on all releases
 - **SLSA provenance** for supply chain security
 - **OpenSSF Scorecard** for security best practices
-- **100% local operation** - your code never leaves your machine
+- **Local by default** - your code leaves your machine only through the LLM and decision-model features you explicitly configure
 
 See [SECURITY.md](SECURITY.md) for our full security policy and vulnerability reporting.
 

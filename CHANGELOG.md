@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-09-19
+
+### Added
+
+- **Optional decision model (TypeSafe Jev via OpenRouter).** A new `decision:`
+  config block and `engines/decision.py` client for a System One decisions API:
+  typed answers (choice / score / noul) with calibrated probabilities, no text
+  generation. Everything defaults off; the client is unconfigured unless
+  `decision.enabled` and `CIVYK_DECISION_API_KEY` are set, each feature has its
+  own switch, and `decision.send_source` is a separate consent for features that
+  upload source bodies. Answers are cached by content hash in the index database
+  (`decision_cache`, schema 2.10.0) so repeated questions and re-indexes replay
+  without spend; `scripts/eval_decisions.py` is the vendor gate against this
+  repo's live index. Design and measurements: `docs/design/jev-decision-model-plan.md`.
+- **`wiki ask` retrieval gate** (`decision.ask_filter`): answer and deep modes
+  screen retrieved chunks for relevance and prompt injection and report whether
+  the wiki appears to cover the question; the response carries a `decisions`
+  summary (calls, tokens, cost, kept/dropped).
+- **`search(action="semantic")`**: meaning-based symbol search over the stored
+  symbol embeddings from a natural-language query, in the daemon and the
+  standalone server. Returns an honest empty result when no embeddings exist for
+  the current backend. With `decision.search_rerank` the 30-candidate shortlist
+  is reordered by the decision model and a "no confident match" note is added
+  when nothing fits.
+- **Wiki lint pair pre-selection** (`decision.lint_pairs`): page pairs that share
+  source files are scored for contradiction and duplication in one decision call;
+  only flagged pages reach the LLM (which still writes every finding), and the
+  LLM is skipped when nothing is flagged.
+- **Ambiguous-edge resolution** (`decision.resolve_edges` + `send_source`): a
+  daemon post-index pass re-binds `ambiguous` reference edges to the definition
+  the model judges correct (`resolution='model'`, confidence on the edge, schema
+  2.11.0) or deletes them when the name is external (builtins such as `.close()`
+  and `.clear()`). `model` edges are excluded from rankings; the evidence set has
+  one definition (`EVIDENCE_RESOLUTIONS` in `models/edge.py`) shared by the
+  repository and the report generator.
+
+### Fixed
+
+- **`wiki ask` code context was keyword junk.** The symbols attached to answers
+  came from exact keyword-name matching and were off-topic for ordinary
+  questions. `ContextBuilder` gains `seed_symbols`; ask seeds the pack from
+  embedding search when symbol embeddings exist and says so in the note when it
+  cannot.
+- **Reasoning stripper discarded answers that quote a think tag.** An answer
+  that documents `<think>` handling quotes the close tag inside a code fence; the
+  stripper treated it as stray reasoning and dropped everything before it. Tags
+  inside fenced or inline code are now ignored.
+
+### Changed
+
+- README no longer claims "100% offline": the product is local by default, and
+  the LLM and decision-model features are documented as explicit opt-ins with
+  what each one sends.
+
 ## [2.0.1] - 2026-08-15
 
 ### Fixed
