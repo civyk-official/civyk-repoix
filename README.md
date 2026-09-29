@@ -478,6 +478,22 @@ graph LR
 - **Embedding Engine** — Vector embeddings with 3-backend fallback (sentence-transformers, API, TF-IDF)
 - **Tool Health Tracker** — Auto-disables failing tools, re-enables after cooldown
 
+### When the daemon stops answering
+
+The daemon logs to the log directory of the user, not to the repository:
+`%LOCALAPPDATA%\civyk-repoix\logs` on Windows, `$XDG_STATE_HOME/civyk-repoix/logs`
+(or `~/.local/state/civyk-repoix/logs`) on Linux and macOS.
+
+| File | What it holds |
+|------|---------------|
+| `daemon.log` | Requests, indexing, worker starts and stops |
+| `daemon-fault.log` | The traceback of every thread when a native fault ends the daemon |
+
+A line `Stale state from dead daemon` in `daemon.log` means that the daemon before
+this one ended without a shutdown; `daemon-fault.log` says where. One daemon serves
+every repository, so it restarts with `civyk-repoix daemon stop`; the next query or
+MCP call starts a new one.
+
 ### Dual Interface
 
 | Mode | Usage | Interface |

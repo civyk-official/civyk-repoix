@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.1] - 2026-09-29
+
+### Fixed
+
+- **The daemon no longer dies when a worker is stopped.** A worker stop (health
+  restart, `config set`, idle cleanup) closed the shared SQLite connection while
+  passes in worker threads were still running statements on it, which ended the
+  whole daemon with an access violation and took every repo's worker with it.
+  `Database.close()` now takes the connection lock like every other access and
+  runs off the event loop; a thread that arrives afterwards gets `RuntimeError`.
+- **The worker answers while symbols are embedded.** The embedding pass (up to
+  8,000 symbols) ran on the event loop, so requests, pings and health checks
+  waited until it ended; the health check then restarted the busy worker. The
+  pass runs in a worker thread and ends when the worker stops.
+- **Background passes no longer pile up.** Every batch of file events started
+  its own embedding and edge-resolution pass. One pass of a kind runs at a time,
+  and requests that arrive meanwhile are covered by one further run.
+
+### Added
+
+- **Fault log.** The daemon writes the traceback of a fatal native fault to
+  `daemon-fault.log` in the log directory; its standard streams are on the null
+  device, so such a fault left nothing in `daemon.log`.
+
 ## [2.1.0] - 2026-09-19
 
 ### Added
