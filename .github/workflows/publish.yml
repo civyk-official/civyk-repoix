@@ -71,7 +71,7 @@ jobs:
     # Guard: never run in forks (they lack the secrets anyway; fail clearly).
     if: github.repository == 'civyk-official/civyk-repoix'
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 100  # Nuitka builds take longer (Windows crossed 60min at 1.10.0)
+    timeout-minutes: 240  # Nuitka builds take longer (Windows crossed 60min at 1.10.0; Linux and Windows hit 100min at 3.0.0, macOS took 85min)
     strategy:
       fail-fast: false
       matrix:
