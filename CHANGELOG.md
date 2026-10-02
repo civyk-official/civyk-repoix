@@ -7,6 +7,258 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-10-02
+
+Two bodies of work since 2.1.1. This is a major release because an upgrade from 2.1.1 needs
+action: the Jev settings and environment variables are renamed and `civyk_repoix.MCPServer` is
+removed (see Upgrading). The daemon keeps answering while it is busy (design and
+measurements: `docs/design/daemon-responsiveness.md`). The tools, the index, the Jev decision
+model and the wiki got a quality overhaul (tasks and evidence: `docs/design/quality-overhaul-plan.md`).
+The MCP surface stays at 14 tools.
+
+### Upgrading
+
+When upgrading from 2.1.1 to 3.0.0, do these before or right after installing 3.0.0:
+
+1. **Rename your Jev settings and environment variables.** The config section `decision` is now
+   `jev`, and the keys and `CIVYK_DECISION_*` variables have new names (table below). 3.0.0 reads
+   only the new names: an old section, key or variable is ignored, with no alias and no warning,
+   so its value silently stops applying. The repository (not the installed package) holds a
+   one-time script that rewrites config files and copies the variables. It needs Python 3.10+,
+   plus PyYAML for its parse check. From a checkout, in
+   `scripts/migrations/2026-10-02-jev-rename/`:
+
+   ```text
+   python migrate_jev_rename.py selftest                 # must print PASS
+   python migrate_jev_rename.py --root <dir>             # dry run: lists what would change
+   python migrate_jev_rename.py --root <dir> --apply     # back up, rewrite configs, copy env vars
+   python migrate_jev_rename.py --root <dir>             # every file should now say "unchanged"
+   python migrate_jev_rename.py --root <dir> --apply --remove-old-env   # drop the old variables
+   ```
+
+   It finds every `memory/codebase-index/config.yaml` under `--root` (default `D:/work` on Windows,
+   the home folder elsewhere) and the global `~/.config/civyk-repoix/config.yaml`. Each rewritten
+   file gets a `config.yaml.before-jev-rename` backup. A value that equals the old default is
+   replaced by the new default, so a 2.1.1 `enabled: false` becomes `enabled: true`. Environment
+   variables are copied only at Windows user scope. On POSIX, and for the current process, the
+   script only reports them: rename those yourself. It also reports, without changing them,
+   other files that still name `CIVYK_DECISION_*` (MCP and agent configs, `.env` files, scripts).
+   Its `README.md` covers the options, exit codes and rollback.
+
+   | 2.1.1 name | 3.0.0 name |
+   |---|---|
+   | section `decision` | section `jev` |
+   | `base_url` | `endpoint_url` |
+   | `timeout_s` | `call_timeout_s` |
+   | `max_retries` | `max_retries_per_call` |
+   | `max_concurrency` | `max_parallel_calls` |
+   | `max_calls_per_run` | `max_calls_per_batch` |
+   | `max_tokens_per_run` | `max_input_tokens_per_batch` |
+   | `send_source` | `allow_source_upload` |
+   | `ask_filter` | `wiki_ask_filter_chunks` |
+   | `resolve_edges` | `index_resolve_edges` |
+   | `lint_pairs` | `wiki_lint_flag_pairs` |
+   | `search_rerank` | `search_rerank_results` |
+   | `CIVYK_DECISION_API_KEY` | `CIVYK_REPOIX_JEV_API_KEY` |
+   | `CIVYK_DECISION_ENABLED` | `CIVYK_REPOIX_JEV_ENABLED` |
+   | `CIVYK_DECISION_BASE_URL` | `CIVYK_REPOIX_JEV_ENDPOINT_URL` |
+   | `CIVYK_DECISION_MODEL` | `CIVYK_REPOIX_JEV_MODEL` |
+   | `CIVYK_DECISION_SEND_SOURCE` | `CIVYK_REPOIX_JEV_ALLOW_SOURCE_UPLOAD` |
+
+   `enabled` and `model` keep their names. The script also maps the keys that only development
+   builds had (for example `explore_rerank`, `dead_code_triage`, `max_cost_per_day`). The
+   `status check` block and the `config` tool's field for the model are also named `jev` now.
+   The full settings reference is the README's "Jev decision model" section.
+
+2. **Jev now calls out by default once a key is set.** `jev.enabled` defaults to `true` (it was
+   `false`). With `CIVYK_REPOIX_JEV_API_KEY` set, four features that make a few calls on index
+   metadata are on: `search_rerank_results`, `explore_rerank_results`, `wiki_ask_filter_chunks`
+   and `wiki_lint_flag_pairs`. The features that send source or make many calls stay off:
+   `allow_source_upload`, `index_resolve_edges`, `wiki_check_citations` and
+   `quality_triage_dead_code`. Paid calls stop for the rest of the UTC day once they cost
+   `daily_cost_cap_usd` (1.0 USD per index; `0` allows none). Without the key nothing is sent.
+   To turn everything off, set `CIVYK_REPOIX_JEV_ENABLED=0` or `jev.enabled: false`.
+3. **`civyk_repoix.MCPServer` is removed.** Importing it raises `AttributeError`. Run
+   `civyk-repoix mcp` instead. `tools/list` no longer takes a `profile` (`core`, `minimal`):
+   every client gets all 14 tools.
+4. **Remove config keys that are no longer read:** the `branches` and `context` sections,
+   `daemon.idle_daemon_timeout_s` and `daemon.startup_mode`. They are ignored.
+5. **Indexes.** A 2.1.1 index (schema 2.11.0) migrates to 2.25.0 in one step on first start and
+   re-parses its files once, because the extractor versions changed. An index that a development
+   build stamped 2.12.0 to 2.24.0 is not migrated; the daemon logs that it does not know the
+   version. Delete that repository's `memory/codebase-index/index.db` and let it rebuild. This
+   loses that repository's `remember` entries, wiki rows and Jev ledger.
+6. **Changed defaults:** `daemon.cleanup_interval_s` is 60 s (was 300 s). With
+   `daemon.embedding_backend: auto` (the default) the backend is still chosen local, then API,
+   then TF-IDF: TF-IDF is used when `sentence-transformers` is not installed, or the local
+   backend cannot be created, and no API endpoint is configured. What changed is that a local model that
+   fails to load is reported and retried (after 30 s, doubling up to 600 s) instead of switching
+   to TF-IDF silently. Set `daemon.embedding_backend: tfidf` to use TF-IDF always.
+
+### Added
+
+- **Jev features:** `explore_rerank_results` reranks the top 12 hits of an `explore` question.
+  `wiki_check_citations` checks each cited sentence against its cited lines and needs
+  `allow_source_upload`. `quality_triage_dead_code` labels `dead_code` rows. Calls a tool makes
+  while someone waits end by `tool_deadline_s` (3 s), and the tool then answers without the model.
+- **Jev ledger and spend control:** every answer is recorded with the feature that asked and
+  replayed from cache. `daily_cost_cap_usd` caps paid calls. After a refusal (HTTP 401, 402, 403,
+  520 or HTML) the endpoint is paused for `refusal_pause_s`, doubling up to `refusal_pause_max_s`.
+  `civyk-repoix restore-edge` undoes an edge the resolver deleted. `status check` shows the
+  model's state and spend per feature.
+- **Retrieval:** a hybrid retriever (full-text, embeddings, exact names) behind `explore`, which
+  routes a question by its shape (identifier, "tests for X", path). `context(task)` is seeded
+  from the retriever. A miss in `symbol`, `file` or `search definition` answers with the nearest
+  names. An FTS5 index of code chunks backs `search code` and `explore`.
+- **Index content:** Markdown is indexed as nested sections. Relative links and `[[wiki links]]`
+  become `doc_link` edges, and `file related` shows `links_to` and `linked_from`. Doc links never
+  enter code caller, impact or provenance counts. Architecture components come from project units
+  (workspace manifests, `src/<pkg>`).
+- **Memories are searchable by meaning:** the top 2 are attached to `explore`, `context` and
+  `wiki ask`, labelled as untrusted.
+- **MCP:** `initialize` returns instructions that map needs to calls. The report and each wiki
+  page are MCP resources (`repoix://report`, `repoix://wiki/<page>`). Read-only tools carry
+  `readOnlyHint`.
+- **Tool arguments are normalized:** common parameter and action synonyms are accepted, values
+  sent as text are coerced, out-of-range numbers are clamped (and the answer says so), and an
+  unknown parameter gets a did-you-mean. `--action` is optional on the CLI when a tool has a
+  default action.
+- **Status:** `status check` counts index errors, lists partial parses with their first error
+  line, shows real progress during a forced reindex, and lists installed repoix skills older than
+  the package.
+- **Wiki:** planner v2 gives every page a type and a descriptive title. `save_page` takes an
+  optional `title`. Citations are validated on save, degraded pages are reported, and
+  `plan` and `page_context` report the stale sections and changed files.
+- **Daemon resilience:** a loop watchdog writes every thread's stack to `daemon-fault.log` after
+  `loop_stall_warn_s` (5 s) and exits with status 70 after `loop_stall_exit_s` (180 s). A
+  heartbeat stamps the state file every `heartbeat_interval_s` (30 s). New `daemon` settings:
+  `loop_stall_warn_s`, `loop_stall_exit_s`, `health_probe_timeout_s`,
+  `health_failures_before_restart` and `heartbeat_interval_s`.
+- **`civyk-repoix status`** shows calls running on the tool lane, slow calls waiting, and the
+  embedding model's state.
+- **Logs:** each MCP gateway writes its own `mcp-<pid>.log`, and every log line carries the process
+  id and the request it serves. Pruning skips the log of a process that is still running.
+- **Config keys:** `tools.duplicates_budget_s` and `tools.duplicates_max_symbols`. The `index.*`
+  keys (for example `max_file_size_mb`, `languages`) now take effect.
+- **Developer tooling** (in the repository, not the package): a real-repository smoke matrix
+  (`scripts/smoke_tools.py`), a frozen decision-model evaluation (`scripts/eval_decisions.py`), a
+  local stand-in for the decision endpoint (`scripts/decision_standin.py`), contract tests for every
+  tool and action, a daemon load test (`tests/integration/test_responsiveness.py`, marker
+  `responsiveness`), and guards for module size, layers and annotation resolution on Python 3.10.
+
+### Changed
+
+- **One answer shape:** no null fields at any depth, hints at most 15% of an answer, and compact
+  JSON over MCP. MCP gets terse tool descriptions; the CLI keeps the full ones. Results carry the
+  code lines that matter (referencing lines, matching lines with one line of context). `file
+  symbols` is compact by default.
+- **`wiki ask`** answers are smaller: at most 2 chunks per page and 8 in all.
+- **`quality impact`** pages callers and affected files by `limit` and `offset`.
+  `tests recommended` defaults to `limit` 20 and ranks its rows with a `reason` per row.
+- **`git` defaults mean what they say:** an omitted `since` is 7 days for `changes` and 30 days
+  for `hotspots` (before, `hotspots --since 7d` ran 30 days). `diff` compares against the
+  repository's default branch (or `origin/<name>` when there is no local copy) instead of a fixed
+  `main`. `source_only` is on by default for `hotspots` and now also drops tests, documents and
+  generated files. A `since` that is not a positive number with `m`, `h`, `d` or `w`, nor an ISO
+  date, is an error that names the accepted forms, not a silent 7 days. Each row says whether its
+  file was added, modified, deleted or renamed. `context delta` gives real line numbers and counts
+  what it leaves out.
+- **Symbol-name queries are literal:** `_` is an ordinary character (it used to match any one
+  character), `*` or `%` matches any run of characters, and `|` separates alternatives. Hits are
+  ranked exact name, whole word, prefix, then part of a name, and each carries a `match` and a
+  `score`. A query that used `_` as a one-character wildcard must use `*` instead; a query
+  holding a literal `|` is now split into alternatives.
+- **Symbol FQNs can change:** a file that shares its stem with another (`foo.py` and `foo.ts`)
+  keeps its extension in the FQN prefix, and a repeated name inside one file gets `#n`. Before,
+  the second file's symbols were dropped with "UNIQUE constraint failed: symbols.fqn"; a
+  collision that still occurs is renamed and recorded as an `fqn_collision` index error. FQNs
+  stored outside the index (`remember` entries, agent notes) may need updating.
+- **`symbol` and `search code`** accept a partial fqn when it resolves uniquely.
+  `search symbols` hides Markdown headings and data keys unless a `kind` asks for them.
+- **Endpoint detection** no longer lists UI reducers or every file under an `api` directory.
+- **Extraction:** scope-aware references with resolved imports; edges carry the reference line
+  and kind; TypeScript and JavaScript declarations, signatures and exports are complete; data
+  files no longer produce symbols for every entry. A change of extractor version re-parses the
+  affected files at daemon start.
+- **Queries do not wait for writes:** they run on read-only WAL connections
+  (`REPOIX_DB_READERS`, 6 by default).
+- **Parsing runs in worker processes:** `REPOIX_PARSE_WORKERS` (default half the cores, `0` parses
+  in the daemon) now counts processes, not threads.
+- **Shorter interpreter switch interval:** the daemon sets Python's thread switch interval to
+  0.5 ms so that reads of many rows are not starved by a computing thread, and restores the old
+  value at stop. `REPOIX_SWITCH_INTERVAL_S` (new) sets it in seconds (kept between 0.0001 and
+  0.005); `0` leaves Python's own value.
+- **Slow calls share three slots:** full-text and semantic search, duplicates, git, context delta,
+  the report and LLM-backed wiki actions. Once 16 wait, the next one is answered as busy.
+- **Embedding model:** a model that fails to load is reported and retried (after 30 s, doubling
+  to ten minutes) instead of falling back to TF-IDF. While it loads, semantic search and
+  `wiki ask` answer at once with a note. A cached model loads without contacting the model hub.
+- **The daemon runs on a selector event loop** (Windows included) and is built from the loaded
+  configuration; the `daemon` section never took effect before.
+- **New databases use incremental auto-vacuum** and give free pages back after a swap or delete.
+- **Internal layout:** the indexer, worker and manager are split into a core plus mixins; tool
+  handlers are one module per tool family; one registry describes every tool, action and
+  parameter, and the docs' tool tables are generated from it (`scripts/gen_registry_docs.py`).
+  The `civyk_repoix` public names are unchanged apart from `MCPServer`.
+
+### Fixed
+
+- **The daemon outlives its client:** it is launched outside the client's job object and process
+  tree, so a host that kills its MCP servers' job no longer ends the daemon.
+- **`civyk-repoix mcp` survives daemon restarts:** it answers `initialize` and `tools/list`
+  itself and reconnects. A lost worker fails only the calls in flight; a read-only call is retried
+  once.
+- **The event loop is never blocked** by tool handlers, indexing, housekeeping, the control plane
+  or logging. Previously a 1,200-file re-index stalled every request for up to 17 s.
+- **Reads on a network share or mapped drive work again:** every read on such a repository failed
+  with "invalid uri authority" while indexing went on. The reader pool now builds
+  `file:////server/share/...` URIs, and a read connection that cannot be opened falls back to the
+  writer's connection.
+- **Healthy workers are not restarted:** a restart needs a closed listening socket or three
+  unanswered probes in a row.
+- **The daemon no longer loses its listening socket on Windows** when a client aborts during
+  accept. A failed health check or idle cleanup restarts after a pause.
+- **The embedding model no longer degrades to TF-IDF after a slow start** and purges its
+  embeddings, which had broken `wiki ask` (dimension mismatch).
+- **`quality duplicates`** prunes candidate pairs and has a time budget: 217 s became about 1 s on
+  a large repository, with the same top groups. A cut scan says `scan_truncated`.
+- **Edges into a re-indexed file come back as they were**, also after a restart. A `unique`,
+  `ambiguous` or `model` edge is bound again by name; a kept import edge whose target lost its
+  symbol is bound only through the file's own imports.
+- **The edge resolver** applies an answer only to an edge whose source is still in the same file.
+- **A failed first index pass** shows as `error` in `status`, and the watcher and delta check still
+  start; unbounded `IN` lists no longer fail with `too many SQL variables`.
+- **Without `allow_source_upload`, no source reaches Jev:** code blocks (fenced or indented) are
+  cut from wiki prose before it is sent, and the wiki citation check requires the consent.
+- **Extractor and binder gaps:** value uses, Java, C#, Go, SQL naming, `.mts` and `.cts`, deep
+  nesting, and pending doc links dropped when the target was indexed later.
+- A stop request reaches indexing, the embedding pass and every LLM-driven wiki action, including
+  `wiki lint`.
+- `symbol hierarchy` explains an empty answer.
+- Torch thread use is bounded where the model is called, so a query no longer adds 16 threads.
+
+### Removed
+
+- `civyk_repoix.MCPServer`, the standalone `mcp_server.py` and `service.py`.
+- The `tools/list` profile tiers (`core`, `minimal`).
+- Config: the `branches` and `context` sections, `daemon.idle_daemon_timeout_s`,
+  `daemon.startup_mode`, and the `decision` section with its `CIVYK_DECISION_*` variables
+  (replaced by `jev`; see Upgrading).
+- The unused `GitWatcher`.
+
+### Security
+
+- **A path the model names is judged from its text before the disk is read.** The gateway admits
+  a `repo_root` only inside the session's workspace (`--repo-root`, the host's roots or the working
+  directory). A network share or device path (`\\host\share`, `\\?\`, `\\.\`) is never opened
+  unless the user named that share, since opening one on Windows offers the user's credentials to
+  that host. A drive letter, mapped or not, still works.
+- `status(action="reindex", paths=[...])` refuses a path on another share or a device path before
+  it touches the path.
+- Jev sends index metadata (names, kinds, paths, docstrings, wiki prose with code removed, the
+  query) unless `allow_source_upload` is set. The key is read only from
+  `CIVYK_REPOIX_JEV_API_KEY`, never from a config file.
+
 ## [2.1.1] - 2026-09-29
 
 ### Fixed
