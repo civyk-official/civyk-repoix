@@ -7,6 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-10-03
+
+### Upgrading
+
+- **Schema 3.2.0: the text of the files is stored compressed.** The first open moves the chunks of
+  `code_chunks` into `chunk_text` (each chunk zlib-compressed) beside `chunk_trigrams`, a
+  contentless FTS5 trigram index of the same chunks, in one transaction; the pages it frees are
+  given back by the compaction that ends the next index pass. A SQLite before 3.43 (no
+  `contentless_delete`) keeps `code_chunks` as it is. `search code` answers as before: on copies
+  of three repositories the 20 queries of the check gave the same answers before and after.
+- **JavaScript, TypeScript and TSX files are parsed again once** (extractor version 14), for the
+  dynamic `import()` binding below.
+
+### Changed
+
+- **The index data is a fifth smaller.** The text of the files took a third of the astra index;
+  compressed beside a contentless trigram index, a fresh index of an archive copy of astra holds
+  121.9 MB of index data instead of 154.9 MB (plan metric M11, target 150 MB), ytm 31.3 MB instead
+  of 40.3 MB and this repository 50.3 MB instead of 58.4 MB (copies migrated from 3.1.1). A plain
+  query is asked of the trigram index as every trigram it holds, so the chunks read are those a
+  `LIKE` found before.
+- **A cached decision keeps what it was asked.** `decision_cache` gains `excerpt` (the first 500
+  characters of the request's longest text, cut from what was sent under the consent to send
+  source) and `injection` (the reply's highest prompt-injection probability), so that a dropped
+  decision can be reviewed later (plan metric M28).
+
+- **`wiki save_page` drafts outside the write lock.** A save plans, grounds and embeds its page
+  without the wiki write lock and holds it only to commit (0.6 s instead of 5.4 s at the median);
+  the daemon no longer runs whole saves one at a time. With four writers `save_page` p95 fell from
+  20.3 s to 9.6 s. A save whose page changed since its draft is drafted again from the new version.
+
+### Fixed
+
+- **A lazily imported component had no caller.** `React.lazy(() => import('./X').then((m) =>
+  ({ default: m.X })))` and `const m = await import('./x'); m.X` now reach the imported module's
+  export: the callback's parameter stands for the module in its own scope.
+- **A file's header was cut like a function's docstring.** A module's docstring or leading
+  comment kept only 500 characters, so a module that names its role later in its header was not
+  found by it (half of this repository's module docstrings are longer). Headers keep up to 4,000
+  characters; the embedding text still uses the first 500, so stored vectors stay valid. Python,
+  Java, Go, C#, Rust, Ruby, PHP and SQL files are parsed again once.
+- **A question that names a component by its agent noun reaches it.** Stemmed, "indexer" is
+  "index", a word most files of an indexing tool hold, so "how does the indexer leave out files
+  that are too large" ranked a storage module that speaks of large index files above the
+  indexer's scope rules. The file channel of `explore` and `context task` now also matches the
+  question's words ending in -er or -or (`indexer`, `scheduler`, `parser`) as written, in a file
+  table that does not stem. On the gold set the question went from P@5 0.0 to 0.8 and no other
+  answer changed (held-out P@5 of this repository 0.88 to 0.96).
+- **The wiki manifest names each page's type**, so a reader of the committed wiki checks a page
+  against its own outline.
+- **A wiki lock file could outlive its writer on Windows** when a rival had it open at release,
+  refusing every writer until it went stale; the release now retries the delete.
+- **Free pages were kept four times longer than meant.** The compaction after a pass released free
+  pages only from 2048 of them, which was 8 MiB with 4 KiB pages and became 32 MiB when index
+  files moved to 16 KiB pages in 3.1.0; the bound is now 8 MiB whatever the page size.
+
 ## [3.1.1] - 2026-10-03
 
 3.1.1 is the first release after 3.0.0 on PyPI: the 3.1.0 section below was never published on its own, so an upgrade from 3.0.0 includes all of it. Read its Upgrading notes too (the first open of each index rewrites its file).
