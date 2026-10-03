@@ -7,6 +7,380 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.1] - 2026-10-03
+
+3.1.1 is the first release after 3.0.0 on PyPI: the 3.1.0 section below was never published on its own, so an upgrade from 3.0.0 includes all of it. Read its Upgrading notes too (the first open of each index rewrites its file).
+
+### Upgrading
+
+- **Symbols are embedded once more.** The embedding text of a symbol now carries what its file
+  says of itself (version 3 of the text), so the first embedding pass after the upgrade deletes the
+  stored vectors and embeds every symbol again; `search semantic` and the semantic channel of
+  `explore` answer from the vectors stored so far until the pass ends.
+
+### Added
+
+- **`scripts/eval_retrieval.py run --in-process`**: the retrieval benchmark asks a worker of the
+  checkout's own code in process (`scripts/inprocess_tools.py`) instead of the installed CLI, on a
+  copy of each repository, with the decision model off; `--load-wiki` stores the committed wiki
+  pages in the index as `save_page` does, so `wiki ask` can be scored on them.
+
+### Changed
+
+- **The embedding text of a symbol carries its file's header** (the docstring or leading comment
+  the file opens with), after the symbol's own docstring. A file whose symbols say little on their
+  own is found by its role: `explore` P@5 on the held-out questions of the gold set rose from
+  0.80 to 0.88 on this repository and from 0.58 to 0.66 on a TypeScript one (same index, only the
+  embedding text varied).
+- **`storage/repository_symbols.py` split** into the symbol rows and lookups
+  (`repository_symbols.py`), the name search (`repository_symbol_search.py`) and the search of the
+  indexed text (`repository_code_search.py`); `Repository` keeps every method.
+
+### Fixed
+
+- **A first wiki plan no longer warns of drift.** Planning a wiki from nothing adds every page,
+  decomposed module families included; `wiki plan` reported that as structural churn.
+- **A planned page that was never written stays in the build order.** The plan's skeleton row of a
+  page with no source files (a synthesis parent) hashed to the same empty set as a written one and
+  read as fresh; it now reads as stale until it is saved.
+
+## [3.1.0] - 2026-10-03
+
+Smaller indexes, reference binding that guesses less in every parsed language, a deep wiki that
+plans every page type and holds its citations to their files, and answers that point to the wiki
+pages. The MCP surface stays at 14 tools.
+
+### Upgrading
+
+- **The first open of each index rewrites its file (schema 3.1.0).** The migration stores every
+  embedding as float16, drops the stored chunks of each JSON file over 32 KiB (`search code` reads
+  such a file from disk instead), and then rewrites the file once with 16 KiB pages (a `VACUUM` in
+  a rollback journal, then WAL again). Depending on the size of the index this takes seconds to
+  minutes (2.4 s for a 240 MB index), and the rewrite needs free disk equal to the size of the
+  index, twice that when the system's temporary directory is on the same disk. When another process
+  has the file open, or the disk is short, the file stays as it was, `daemon.log` says why, and the
+  next start tries again.
+- **Do not open a migrated index with 3.0.0.** A 3.0.0 build would read the float16 vectors as
+  float32. To go back, stop the daemon, delete `memory/codebase-index/index.db` (with its `-wal`
+  and `-shm` files) and run `civyk-repoix rebuild` on the older version; that drops the
+  repository's `remember` entries, the wiki rows of the index and the Jev ledger.
+- **Indexes re-parse once.** The extractor version of every code language moved, so each code file
+  is parsed again on the first pass after the upgrade.
+- Re-run `civyk-repoix init` (or `civyk-repoix skill install`) so the rules block and the agent
+  skills match 3.1.0; until then the server's instructions and `status(action="check")` say which
+  installed skills are older and what changed.
+
+### Added
+
+- **Jev key from the persistent user environment (Windows).** A daemon started from an environment
+  that lacks a `CIVYK_REPOIX_JEV_*` setting (the Jev key above all: an editor or a shell opened
+  before `setx`) takes it at start from `HKCU\Environment`. The daemon's own environment always
+  wins, and the log names the settings taken, never their values. Only the Jev settings are taken:
+  `CIVYK_LLM_API_KEY` and the other variables still come only from the environment that starts the
+  daemon. `CIVYK_REPOIX_NO_USER_ENVIRONMENT=1` in the daemon's own environment turns this off (a
+  test or sandbox daemon). A value the environment refuses is skipped with a warning. Elsewhere
+  nothing is read.
+- **Jev answer cache retention.** `jev.cache_retention_days` (30) lets cached answers older than
+  that go while the daemon is idle, and `jev.cache_max_rows` (5000; 0 keeps every answer) removes
+  the least recently used answers beyond it after each index pass (a replay marks its answer used,
+  at most once a day: `decision_cache.used_at`). An answer let go is asked, and paid for,
+  again the next time its question comes; the spend ledger keeps every cost. The ytm cache held
+  19,378 answers (8.8 MB) after nine days.
+- `status(action="check")` and the `config` tool say, when Jev is active, where its key came from
+  (`key`), whether the consent to upload source code is given (`source_upload`), and which
+  switched-on features send source (`sends_source`) or wait for that consent (`waits_for_consent`),
+  and, active or not, `environment`: each `CIVYK_REPOIX_JEV_*` setting an environment variable
+  gives (it overrides the config files) and where it came from, so a consent taken from the
+  persistent user environment shows.
+- Answers point to the wiki: `explore` (the pages a question is about, or those built from a
+  name's or a path's file, with a `wiki(ask)` step for a question the wiki covers), `symbol
+  detail`, `file symbols` and `context delta` (the pages the change may make stale) list
+  `wiki_pages`, each with its live `stale` flag.
+- `explore` answers a question about the repository as a whole (components, architecture,
+  structure) with an `orientation`: the components, the strongest dependencies and the report. "main
+  components of this repo and how they depend on each other" went from 1,530 tokens of name matches
+  to 788 tokens of components and dependencies. The orientation hint of `status` and the connect
+  text is one wording and names `repoix://report` and `architecture(components)`.
+- MCP resources: `repoix://report` and `repoix://wiki/<page id>` are named in the `instructions`,
+  the rules block, the `repoix` skill and the README. A stale wiki page reads behind a banner and is
+  listed as stale, and the server declares `resources.listChanged` and tells the host when a
+  worker's wiki changes (a build, or a page an agent session saved or planned). `wiki list` items
+  carry `stale`.
+- `remember(action="list")` takes an `offset` and answers `total_count`, `has_more` and `offset`:
+  entries past the latest 50 are reached by paging, not only by key.
+- While an installed repoix skill is older than the server, the MCP `instructions` end with a notice
+  that names the oldest installed version, what the newer skills changed and the command that
+  updates it; `status(action="check")` gives the same text as `skills.hint`. `civyk-repoix init`
+  warns, like `skill status`, when a user-scope copy shadows a project skill it wrote.
+- `status` adds `branch_note` when the branch checked out (`branch`) is not the one the index was
+  last built on (`last_index.branch`): the answers reflect the indexed branch until the next pass.
+- A code file's header is the doc of its toplevel symbol: Python's module docstring, and in the
+  other languages the comments before the first declaration (a comment directly above it stays that
+  declaration's doc; shebangs, tool directives and licence notices are left out). Retrieval's file
+  channel searches a header as one more field of its file, weighed with the file's other words, so
+  a long header that only mentions a question's words no longer outranks the file whose symbols
+  define the answer.
+- The deep wiki plans every registered page type: a tool and command reference (from a `TOOLS`,
+  `COMMANDS` or `ROUTES` registry and the command line) when the code has no HTTP endpoints, a
+  concepts page for a business-context glossary of five terms or more, and a developer guide (tests
+  with a CI workflow or test configuration). Event callbacks and index passes (`on_*`, `*_pass`,
+  `delta_index`) make an "Events and background passes" flow, and the parent of a split unit is a
+  `unit-map` page (purpose, parts, how the parts work together).
+- A wiki lint run publishes its summary: the manifest records it and the README's quality score
+  loses points for high and medium findings.
+- `graph.json` adds `call_provenance`, the provenance of the call edges apart.
+
+### Changed
+
+- **Indexes are about a third smaller.** Embeddings are stored as float16 (the top 10 of a semantic
+  search agree at 0.998 on astra and 1.000 on ytm; a similarity keeps three decimals), pages are
+  16 KiB, and a JSON file over 32 KiB is no longer chunked into the index: `search code` reads it
+  from disk (`files.text_on_disk`) and finds its keys and values as before. A pass that wrote 256
+  files or more, and every full pass, merges the trigram index of `search code`. Measured on copies
+  of live indexes: astra 241.4 MB to 152.2 MB, ytm 76.6 MB to 47.6 MB.
+- The deep wiki the index writes (`memory/deep-wiki`) and the schema snapshots and journal
+  drizzle-kit writes in a `meta` directory are no longer indexed: the wiki tables hold the wiki, and
+  each snapshot repeats the whole schema. The next pass removes them from an existing index.
+- `wiki ask` holds its answer to `wiki.ask_token_budget` x 4 bytes (12,000 by default) as either
+  transport sends it, freshness block and next step included. Lower sections shrink or go first, then
+  memories and code, before the best section loses its text; `truncated` is always returned and
+  `sections[].cites` names each section's citations by place in the one `citations` list.
+- `wiki ask` ranks the wiki's chunks by the words of the question as well as by meaning: BM25 over
+  each chunk's heading and text (SQLite FTS5, stemmed) is fused with the embedding ranking by
+  reciprocal rank, so a broad chunk (a table of every setting, a subsection covering several
+  mechanisms) no longer outranks the section that names what was asked. A chunk is still kept only
+  when its similarity is at least 0.6 of the best one. Measured on the committed wikis (rag mode,
+  local model): hit@3 0.70 to 0.95 on this repository, 0.75 unchanged on ytm (MRR 0.68 to 0.70).
+- `wiki ask` in `rag` mode (and without an LLM) leaves out the retrieved chunks Jev rates as prompt
+  injection (one call, injection questions only), with `jev.wiki_ask_filter_chunks` on and a key
+  set; before, rag returned them unscreened to the agent's LLM.
+- The `jev` block of `status`: the edge resolver's own figures (`question_version`, `last_pass`,
+  `today`) move under `resolver`; each entry of `features` names its `jev` switch and counts
+  `unanswered` requests.
+- Retrieval leaves closures (functions defined inside a function) out of the text, file and meaning
+  channels; they are found by their name. Exact-name retrieval no longer gives the top rank to a
+  symbol whose name equals an ordinary word of a question (`record`, `stage`, `daemon`); only
+  code-like names, or a one-word query, enter that channel.
+- `context task` measures its pack as the client receives it: the last symbols go until it fits
+  `token_budget`, a note says how many, and `tokens_used` is the measured size (it reported 1,815
+  tokens for a 3,585-token pack at the default budget; it now sends 1,888).
+- Small answers keep their follow-ups: hints may take 15% of an answer or 320 bytes, whichever is
+  more. `symbol detail` steps to its callers, its references and the tests of its file.
+- Symbol-kind filters (`search kind`, `file kinds`, `architecture kind`, `quality kinds`, `context
+  prefer_kinds`) take the kinds the index holds, `module`, `enum` and `type` included, and `file
+  related`'s `relationship_types` its accepted values, `import` and `links` included. A value is read
+  whatever its case; an unknown one is refused with the allowed list instead of returning nothing.
+- A call missing a required argument is refused in one shape, `{"error": "<tool> '<action>' needs
+  '<name>'"}`. An uninitialized repository and a failed reindex
+  answer with `error`.
+- `quality impact` lists the tests that call an affected symbol in `affected_tests` by default; with
+  `include_tests=false` it still does not walk on from them. `file symbols` is paged (`limit`,
+  default 100, and `offset`, with `truncated`) and takes an absolute path inside the repository.
+  `quality duplicates` lists at most 10 members per group (`members_truncated`) and puts groups made
+  only of test code last. `explore` marks an answer whose every match was found only by meaning
+  (`match: weak`), and answers a query with no searchable word by meaning instead of failing.
+- `git since` and `git source_only` no longer advertise a default in `tools/list` (their defaults
+  differ by action), and `repo_root` is described once in the server instructions instead of on each
+  of the 14 tools: `tools/list` is 14,122 characters, from 14,340.
+- The routing advice is written once and the four surfaces that gave it are made from it: the MCP
+  `instructions`, the rules block `init` writes, the "Route by need" table of the `repoix` skill and
+  `docs/claude-instructions-template.md`. "Find code by name or meaning" routes to
+  `search(semantic)` everywhere. The skill's list of endpoint frameworks now names Starlette and
+  routing-controllers, and the `repoix-wiki` skill tells the author to ask again with `query` when
+  `page_context` reports `degraded` grounding.
+- Handlers that swallowed a failure now log it (once at warning, then debug) and, where a result
+  degrades, record the step as degraded: the git branch lookup, the wiki-state read, the socket
+  probes, the parse pool, the SDK chat call, the CLI and hook boundaries and the research-note save.
+  A parse worker's failure is logged with its traceback in the daemon log.
+- Wiki structure: the README follows the page-type registry (sections by each type's navigation
+  section, pages in reading order, the parts of a split unit right under the unit's page, research
+  notes last, each page with the summary its author wrote). A part of a split unit is named after the
+  subpackage that holds most of its files, never a number, and the page budget grows, up to
+  `wiki.max_pages_ceiling`, until every unit too big for one page is split; parts of one subpackage
+  whose labels start alike take their label's next name. When the page budget gives a unit fewer
+  pages than its parts, each smallest part merges into the part it links to most. A page whose files
+  hold several responsibilities is asked, in `page_context` and the page prompt, for one `###`
+  subsection per responsibility under "How it works". One-off scripts under `scripts/migrations/`
+  are not documented.
+- Wiki flow pages rank their roots by evidence-backed fan-out, leave closures out, follow only
+  trusted call edges, take only files the planner covers, and anchor on the dispatch and the files
+  that drive it. The component diagram draws the transitive reduction of the component
+  dependencies, at most 24 edges. A design document whose status says "Proposed", "Draft" or
+  "Planned" while the code files it names are indexed gets a status note in its grounding.
+- README: the wiki's module pages are planned structurally and deterministically and pinned
+  (`wiki.planning: structural` by default; the agent path never asks an LLM).
+- Development: the module-size ratchet counts logical lines (default 300, slack 30, ceiling 1,810),
+  the silent-handler ratchet counts `contextlib.suppress(Exception)` and allows none, a ratchet holds
+  `Any` in the package's signatures to a budget that only shrinks, Ruff checks blind excepts
+  (`BLE`), and an integration test runs every `civyk-repoix query` example of the skills and the
+  rules block. `scripts/audit_index.py` reports the index data size from the file's B-tree pages,
+  `scripts/measure_tools_list.py` counts tokens with tiktoken when it is installed, and
+  `scripts/eval_agent_routing.py` measures from Claude Code's session transcripts how agents find
+  code (baseline 2026-09-19 to 2026-10-03 with 2.0.0 skills: index share of discovery calls 2.0%).
+
+### Fixed
+
+- `explore` and `context task` keep test files out of a question that names test files as a kind
+  of file ("how are test files excluded from rankings"): the question is about the code that tells
+  them apart. A test word on its own, a name in code (`test_path`), or a question about what tests
+  cover or exercise still lets the tests in. Measured in process on fresh indexes (`explore` P@5
+  lenient, tuning and held-out): repoix 0.80 and 0.78 before, 0.86 and 0.80 after; ytm 0.98 and
+  0.58 before, 0.96 and 0.60 after.
+- The 3.1.0 schema also drops `idx_edges_source_kind` and `idx_symbol_embeddings_model`: the
+  unique edge index answers a lookup by source and kind as fast, and no lookup selected vectors by
+  model through the other. The embedding pass writes the vectors in the order of their symbols,
+  which fills the table's pages (read by kind, its writes left them about a ninth empty). A fresh
+  ytm index holds 39.6 MB of index data, 40.7 MB before both.
+- **A daemon on Windows no longer dies with an access violation when it stops a file watcher.**
+  watchdog's Windows emitter closed its directory handle on the stopping thread while its own thread
+  could still read with that value; Windows reused the value at once (often for the semaphore of
+  the stopping thread's `join`), the failed read looked like a deleted root, and the second stop it
+  triggered closed the reused handle. The daemon's 0.5 ms switch interval made the window wide: 17
+  daemons of 3.0.0 crashed in `python313.dll`. The watcher on Windows now uses an emitter whose own
+  thread alone closes its handle, exactly once; a stop only cancels the pending read until that
+  thread ends (`monitors/windows_watch.py`). A 3.0.0 daemon can still crash this way until it is
+  upgraded; setting `REPOIX_SWITCH_INTERVAL_S=0.005` before it starts narrows the race (at the cost
+  of slower answers while it computes, see `docs/design/daemon-responsiveness.md`).
+- The process probe declares the signatures of `OpenProcess`, `GetExitCodeProcess` and
+  `CloseHandle` (`utils/win32.py`), so a 64-bit handle is never passed or returned as a 32-bit C
+  `int`.
+- `status(action="check")` no longer says a daemon takes the decision model's key from the
+  persistent user environment when that daemon sets `CIVYK_REPOIX_NO_USER_ENVIRONMENT`, which stops
+  it from reading there.
+- **The MCP gateway bounds what a host can make it hold.** A request line over 16 MB (the socket
+  transport's cap) is refused with an `INVALID_REQUEST` error, under the request's id when it can be
+  read, instead of being read whole, at most
+  64 read lines wait to be handled (the reader, and so the host's writes, then wait), at most 32
+  calls run at once (one more is answered `SERVER_BUSY`), and a host that leaves 64 MB of output
+  unread ends the session instead of growing the queue. A session that ends with stdin still open
+  or stdout unread exits with its own code instead of aborting or hanging at shutdown.
+- Reference binding in every parsed language guesses less. A member call on a receiver of unknown
+  type binds only within the file's language family, as `unique` only to a declaration in the same
+  file or a file it imports (a namesake in a package the file never imports is `ambiguous`, so it no
+  longer draws dependencies between packages that do not import each other), and a call of a
+  runtime builtin's name (`get`, `push`, `Add`) binds only to a declaration the file or its imports
+  hold. `symbol(action="callers")` lists the proven callers with their `resolution` and the guessed
+  ones apart (`guessed`, `guessed_count`); a call through an interface binds its member (`import`)
+  rather than its one implementation. `self.x()`/`this.x()` reaches a method of the enclosing
+  class's family (its bases up to eight classes deep, its subclasses and their bases, so a sibling
+  mixin of the same class), the hierarchy edges of a pass are stored before its other references
+  are bound, and an edge into a file indexed again is rebound by the same reach rule: the graph
+  depends neither on the order files are bound in nor on edit history, and live mixin methods are
+  not listed as likely dead code.
+- Declarations the table languages missed: TypeScript interface and object-type members; C#
+  delegates, events, indexers, operators, conversions, destructors and local functions, with one FQN
+  for a block and a file-scoped namespace; Go package constants and variables and interface methods,
+  a Go method under its receiver type; Rust functions of an `impl` or a trait as methods of their
+  type, macros and unions; Ruby constants; PHP namespaces, constants and properties. C# `new`, type
+  uses and method groups, PHP base classes and static calls, and Ruby calls without parentheses are
+  references. A method of a class torn by a syntax error is no symbol, and a JSON or YAML key written
+  with a dot is quoted in its FQN (`exports["."]`).
+- A function named as a parameter's default value (Python, JavaScript, TypeScript) is a use: it has
+  callers and is not reported dead.
+- A file whose deferred edges were never made (an interrupted pass) is no longer recorded as indexed
+  with its content hash: it stays pending until its edges exist, so the next pass makes them instead
+  of leaving the file with zero outgoing edges and its callees falsely dead. An exception while
+  binding one file's references is logged and leaves only that file pending. While a pass binds a
+  file, the wiki treats its placeholder content hash as unknown: pages citing it do not read as
+  stale, and a page saved in that window records the file's real hash.
+- `quality dead_code` calls a method of a class that implements an interface only `likely` dead, not
+  `certain`, when the interface declares no member of its name in the index; a method that
+  implements a member the interface declares is reached through it and not listed. A member of an
+  interface or a type alias (a TypeScript Props callback used through destructuring) is never
+  listed as certain dead code.
+- The report's graph confidence counts the call, type and base edges between production source
+  files (imports bind their module by construction, tests are not ranked), and gives the share of the
+  calls apart. Its test line reads "N test files, their tests written as calls (...), not counted"
+  when every suite is written that way.
+- A JavaScript file whose lines average over 110 characters is a minified bundle whatever its name:
+  indexed without symbols, and the error log says so. Any code file keeps at most 10,000 symbols.
+- The wiki generator's state files (`memory/deep-wiki/**`, such as `manifest.json`) are no longer
+  indexed, and neither are its pages.
+- `status` reports as `branch` the branch checked out now, read from git, instead of the branch of
+  the last index pass; that one is `last_index.branch`. On a detached HEAD `branch` keeps the
+  indexed branch and a `branch_note` says so.
+- An answer whose optional step fell back now says so: every tool the worker answers (and `status`)
+  names the steps under `degraded`. `wiki ask` without its code context or seed symbols reported
+  nothing but one process-wide warning.
+- `REPOIX_IDLE_TIMEOUT` is read through the config like every other variable: a value the key
+  refuses (not a number, or negative) keeps the default with a warning instead of failing the
+  worker's start.
+- `symbol hierarchy` walks supertypes and subtypes with one query per level: a three-level walk down
+  a 12-type fixture took 20 queries and now takes 3, with the same answers. Its rows no longer carry
+  an internal database `id`.
+- A tree-sitter grammar that fails to load is warned about once with its traceback and is not tried
+  again for every file; the failed delta check and a file that fails to index are logged with their
+  traceback.
+- A local embedding model that is not cached is fetched in a process of its own that is ended after
+  600 s, while the lock that guards the model is free; a second caller waits for that fetch instead of
+  starting another. The download had no total deadline and held the lock every embed call waits on.
+  Stopping the daemon kills a fetch under way, and a fetch exits by itself when the daemon dies.
+- A process that exists but may not be queried (access denied on Windows, `EPERM` on POSIX) read as
+  dead, so a lock, a per-process log or the daemon start could be taken from a live process. It now
+  reads as alive, and so does a process the probe cannot answer for, with a warning.
+- `context trace` reads each frame by its own named groups; a frame after a log prefix no longer
+  fails the whole call.
+- Every `next_steps` hint is given the arguments it needs (`tests recommended` gets the answer's
+  `changed_files`), so each runs; a short answer keeps at least its first step. The tests step of
+  `context(delta)` runs against the branch base when the delta lists more files than the step can
+  name, and the one of `quality(impact)` starts with the symbol's own file (now in the answer as
+  `file`) and is kept when the symbol has no callers.
+- `tests recommended` no longer follows a guessed edge to a runtime builtin member, and a test found
+  by name only ranks `low`.
+- A filter value that names nothing the index holds (`component`, `kind`, a `files` path) is said so
+  in `notes`, with `did_you_mean`; a wiki page id or plan page id that names nothing gets the
+  nearest ids.
+- `wiki status.last_built` written by an agent session is UTC with its offset, like every other
+  timestamp.
+- The Jev citation check runs as a batch pass: the calls of a lint or a build share one batch budget
+  (`max_calls_per_batch`, `max_input_tokens_per_batch`) and the run's stop. Under the 3 s tool
+  deadline, 7 of 8 parallel calls timed out waiting for the first and the check switched off.
+- The dead-code triage of a page ends by one `jev.tool_deadline_s`: each call gets what is left of
+  it, instead of a fresh deadline per call.
+- A Jev request sent and never read (it timed out, or its reply came after the call ended) may be
+  billed: the spend ledger now books it at the client's estimate, and the daily cap counts it. A
+  proxy's or captive portal's web page returned where an answer was due is not booked. The Jev
+  answer count and model in `status` and REPORT.md count only answered rows (the estimates' cost
+  stays in the spend), and REPORT.md no longer calls them cached.
+- `search(action="semantic")` asks the rerank only for two or more candidates, lists each one's file
+  as `explore` does, and keeps the cosine order on any failure of the rerank (an empty shortlist
+  failed the whole search).
+- `wiki ask` sections took `stale` from the stored page status while the response's `freshness`
+  block used the live predicate, so one answer said both "fresh" and "stale" of a page. Every
+  section's `stale` now comes from the predicate `wiki status` uses, and a stale page's text ranks
+  behind fresh text of a close score.
+- A `wiki ask` section cites the lines its own text cites, those whose sentence shares the most of
+  the question first; an answer that kept a section's first three citations showed lines from other
+  sections of the page.
+- Wiki pages saved with CRLF line endings are stored with LF only; a stray carriage return no longer
+  splits every table row.
+- A wiki citation's line range is held to its file: saving drops a range past the end of the file
+  and cuts one that runs past it, a citation refresh never moves a range off the file, lint reports
+  out-of-file ranges and ranges over 150 lines, grounding seeds span 150 lines at most, and only
+  in-file ranges count as anchored in the quality score.
+- The wiki README and manifest list only pages whose file exists, and a research note whose file was
+  deleted is retired with its row: only when its file is gone from a notes directory that still
+  holds other notes, so a checkout without the wiki keeps every note, and a note's file is written
+  before its row, so a concurrent prune cannot lose it.
+- A wiki built in a linked git worktree is titled after the repository, not after the worktree's
+  folder, also with git older than 2.31.
+- `wiki lint` keeps the build's `git_commit`, `generated_at` and token counts in the manifest and
+  README, writes nothing when its summary is unchanged, and pages keep their verification score
+  while their text is unchanged; it rewrote both committed files on every run.
+- A command that opens the index beside the daemon (`python -m civyk_repoix.workers.wiki.chunk_text`)
+  refuses to read or write the vectors of an index the daemon has not migrated to 3.1.0, with a
+  message to restart the daemon, instead of writing float16 vectors the 3.1.0 step then destroyed or
+  reading float32 ones as twice as many values. A stored vector the 3.1.0 step cannot convert is
+  dropped, logged and made again later instead of failing the step and leaving the repository
+  unopenable. After the page rewrite the switch back to WAL is retried while another process holds
+  the file, and a journal left in rollback mode is logged as such.
+- `search code` never reads a large JSON file through a symlink that replaced it after indexing; the
+  indexer and the search share one no-follow reader.
+- `config set` accepts an empty `value` (it empties a list or clears a text), and blank text for any
+  other parameter or for `action` counts as not given instead of being refused.
+- `query <tool> --help` lists the values an enum parameter takes.
+- A wiki `save_page` or `plan` answers without waiting for the status broadcast to every client.
+
 ## [3.0.0] - 2026-10-02
 
 Two bodies of work since 2.1.1. This is a major release because an upgrade from 2.1.1 needs

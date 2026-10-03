@@ -110,6 +110,20 @@ civyk-repoix query status --action check   # index state, and whether Jev is act
 civyk-repoix status                        # worker, daemon, embedding model, log directory
 ```
 
+### Upgrading to 3.1.0
+
+1. **The first open of each index rewrites its file** (schema 3.1.0: float16 embeddings, no stored
+   chunks for JSON files over 32 KiB, 16 KiB pages). It takes seconds to minutes depending on the
+   size of the index and needs free disk equal to that size (twice that when the system's
+   temporary directory is on the same disk). If the file is busy or the disk is short, the index
+   stays as it was, `daemon.log` says why, and the next start tries again.
+2. **A migrated index cannot go back to 3.0.0**: a 3.0.0 build would misread its vectors. To
+   downgrade, delete the index and rebuild it, as described under the 3.0.0 upgrade below.
+3. Every code file is parsed again once, because the extractors changed. Re-run
+   `civyk-repoix init` (or `civyk-repoix skill install`) so the skills match the new version.
+
+The full list is in the [CHANGELOG](CHANGELOG.md).
+
 ### Upgrading to 3.0.0
 
 Three changes need action. The full list is in the [CHANGELOG](CHANGELOG.md).
@@ -202,8 +216,8 @@ setup — orients itself with a single file read instead of a grep sweep.
 
 - **Graph confidence.** References resolve by name, so every edge records how it
   was resolved — `local` (same file), `import` (a module this file imports),
-  `unique` (the only definition of that name), `ambiguous` (a guess among
-  equals), or `model` (an ambiguous edge that the Jev edge resolver re-bound;
+  `unique` (the only definition of that name, which the file reaches), `ambiguous`
+  (a guess among equals), or `model` (an ambiguous edge that the Jev edge resolver re-bound;
   off by default). **Only evidence-backed edges (`local`, `import`, `unique`)
   rank**; the report states the mix, so a
   guess is never presented as a fact, and a report built on an unresolved graph
@@ -225,6 +239,8 @@ setup — orients itself with a single file read instead of a grep sweep.
   (CLI, `--print` to stdout), or the `/repoix-map` skill (see below).
 - The header states generation time and index freshness so staleness is
   always visible.
+- MCP hosts that read resources get the report as `repoix://report` and each wiki page as
+  `repoix://wiki/<page id>`, listed by `resources/list`.
 
 ______________________________________________________________________
 
@@ -250,7 +266,9 @@ and Examples**. Overview and architecture are synthesized **bottom-up** from per
 consistency. Each page carries **`[path:Lstart-Lend]` citations to real files**, relevance-gated
 inline **Mermaid diagrams**, a human `README.md` landing page (navigation + per-page table) with a
 0–100 **quality score**, and a machine-readable `manifest.json`. The **module page set is planned
-dynamically by the LLM** from the real source tree, while code guarantees ~100% coverage of the
+structurally and deterministically** from the project units of the real source tree and pinned, so
+page ids stay stable (`wiki.planning` defaults to `structural`; only an API-key `generate` opted
+into `auto` or `llm` asks its LLM to group modules, and the agent path never does), while code guarantees ~100% coverage of the
 **production surface** (every indexed source file except test code — tests *ground* pages via the
 Examples page and each page's "tests covering this code" block, rather than being documented as
 subsystems; set `wiki.include_tests: true` for a repo whose product is a test suite) and prunes
@@ -285,9 +303,11 @@ identical system prefix across all pages so providers can serve it from their pr
   mark affected pages stale.
 - **Wiki lint:** `wiki(action="lint")` runs cross-page health checks — broken/dead links, orphan
   pages, dead citations, stale pages/notes, dead/unverifiable notes, coverage gaps, deliberately
-  excluded paths, duplicate titles — plus an optional LLM contradiction/duplication pass
-  (`wiki.lint_llm`). The free structural tier also runs after every changed build and lands in
-  the manifest.
+  excluded paths, duplicate titles, citations whose lines are not lines of their file or span more
+  than 150 lines — plus an optional LLM contradiction/duplication pass (`wiki.lint_llm`). The free
+  structural tier also runs after every changed build; a lint whose summary changed lands in the
+  manifest (which keeps the commit, time and tokens of the build), and its high and medium
+  findings take points off the README's score.
 - **Append-only audit log:** every build, filed note, and lint pass appends one grep-able line to
   `memory/deep-wiki/<branch>/log.md` — the wiki's chronological history.
 - **Architecture-aware planning:** one page per project unit (the nearest manifest root, so
@@ -515,8 +535,10 @@ the same code every session. Three layers counter that:
 
    `--agent` accepts a comma-separated list (repeatable) and defaults to `claude`; the
    directories are resolved the same way `init` resolves them. Installs are
-   version-stamped — re-running after an upgrade refreshes the skills. `skill status`
-   warns when a user-scope copy shadows this project's, which Claude Code allows it to do.
+   version-stamped — re-running after an upgrade refreshes the skills. `skill status` and
+   `init` warn when a user-scope copy shadows this project's, which Claude Code allows it to
+   do, and name the command that updates it. While an installed copy is older than the server,
+   the MCP `instructions` and `status(action="check")` say what it gets wrong.
 
 3. **Zero permission friction** — setup pre-allows the `mcp__civyk-repoix` server in the
    project settings, so a semantic call never costs a prompt that a plain grep doesn't.
@@ -696,7 +718,7 @@ wiki:
 | `REPOIX_DELTA_STREAMING_THRESHOLD` | 10 | An update of more files than this streams them to the indexer |
 | `REPOIX_EMBED_THREADS` | 2 | Torch threads one local embedding call computes on (`0` leaves torch's own setting) |
 | `REPOIX_SWITCH_INTERVAL_S` | 0.0005 | The daemon's thread switch interval in seconds, from 0.0001 to 0.005 (`0` leaves Python's own) |
-| `REPOIX_IDLE_TIMEOUT` | `daemon.background_optimization_idle_s` | Seconds a worker must be idle before it optimizes its database (for tests) |
+| `REPOIX_IDLE_TIMEOUT` | 300.0 | Seconds a worker must be idle before it optimizes its database; overrides `daemon.background_optimization_idle_s` (0 or more) |
 | `CIVYK_EMBEDDING_BACKEND` | auto | Embedding backend: `auto`, `local`, `api`, `tfidf`, `openai` |
 | `CIVYK_LLM_API_KEY` | — | API key for the OpenAI-compatible LLM (deep wiki). Ignored when the provider is `copilot`. **Secret — env only** |
 | `CIVYK_LLM_BASE_URL` | `https://api.minimax.io/v1` | Base URL of the OpenAI-compatible endpoint (e.g. Minimax). Ignored when the provider is `copilot` |
@@ -709,7 +731,8 @@ wiki:
 | `CIVYK_WIKI_FILE_CHANGE_THRESHOLD` | 25 | Changed source files before an auto-rebuild |
 | `CIVYK_WIKI_STEERING` | true | Honor `memory/deep-wiki/steering.yaml` |
 | `CIVYK_WIKI_LINT_LLM` | false | Wiki lint: run the LLM contradiction pass |
-| `CIVYK_REPOIX_JEV_API_KEY` | — | API key of the Jev decision model (TypeSafe Jev through OpenRouter by default). Without it no Jev call is made. **Secret — env only** |
+| `CIVYK_REPOIX_JEV_API_KEY` | — | API key of the Jev decision model (TypeSafe Jev through OpenRouter by default). Without it no Jev call is made. **Secret — env only**. On Windows a daemon whose environment lacks a `CIVYK_REPOIX_JEV_*` variable takes it from the persistent user environment (`HKCU\Environment`, what `setx` writes) |
+| `CIVYK_REPOIX_NO_USER_ENVIRONMENT` | — | `1`: the daemon takes nothing from the persistent user environment (for a test or sandbox daemon started from a scrubbed environment on purpose). Read only from the daemon's own environment |
 | `CIVYK_REPOIX_JEV_ENABLED` | true | `jev.enabled`: `0` turns every Jev feature off; on, Jev still needs `CIVYK_REPOIX_JEV_API_KEY`, and each feature has its own `jev.*` switch |
 | `CIVYK_REPOIX_JEV_ENDPOINT_URL` | `https://openrouter.ai/api/alpha/decisions` | `jev.endpoint_url`: the decisions endpoint (OpenRouter), or TypeSafe direct `https://api.typesafe.ai/v1/systemone` |
 | `CIVYK_REPOIX_JEV_MODEL` | typesafe/jev-1.13 | `jev.model`: the model id (`jev-latest` on the direct TypeSafe API) |
@@ -734,7 +757,17 @@ the `CIVYK_DECISION_*` variables of 2.1.1 are not read at all; see
 off by default.
 
 **The key and consent.** The API key is read only from the `CIVYK_REPOIX_JEV_API_KEY` environment
-variable, never from a config file, and is never shown by any tool. Without it no request is made
+variable, never from a config file, and is never shown by any tool. On Windows, a daemon started
+from an environment that lacks a `CIVYK_REPOIX_JEV_*` setting (an editor or a shell opened before
+`setx`, for example) takes it at start from the persistent user environment
+(`HKCU\Environment`); a value the daemon's own environment holds always wins, and the log names the
+settings taken, never their values. Only the `CIVYK_REPOIX_JEV_*` settings are taken: the other
+variables (`CIVYK_LLM_API_KEY` among them) reach the daemon only from the environment that starts
+it. A daemon whose own environment sets `CIVYK_REPOIX_NO_USER_ENVIRONMENT=1` takes nothing (a test
+or sandbox daemon started from a scrubbed environment). The `jev` block of `status(action="check")`
+says where the key came from (`key`), and where each `CIVYK_REPOIX_JEV_*` setting an environment
+variable gives came from (`environment`): such a value overrides the config files, so a consent
+taken from the persistent user environment shows there. Without it no request is made
 and no network is touched; the tools answer exactly as they do without Jev, with no warning or note
 in their answers and nothing in the log on each call. A default install without the key therefore
 makes no Jev calls. Three places say that Jev is inactive and why (no key, switched off, or no
@@ -742,7 +775,9 @@ endpoint): the `jev` block of `status(action="check")`; the `jev` field that the
 to `list` and to `get` of a `jev` key; and `wiki(action="lint")` with `wiki.lint_llm` on, once,
 under `summary.decisions`. Uploading source code needs a second, separate consent:
 `jev.allow_source_upload` (or `CIVYK_REPOIX_JEV_ALLOW_SOURCE_UPLOAD`), off by default. Every
-question that would carry source asks this one consent.
+question that would carry source asks this one consent. `status(action="check")` and the `config`
+tool show it: `source_upload`, and with it `sends_source` (the switched-on features that send
+source), without it `waits_for_consent` (the switched-on features that do nothing without it).
 
 **What is sent by default is index metadata, never source:** symbol names, kinds and paths,
 docstrings (documentation), wiki prose and page summaries with their fenced code blocks and inline
@@ -753,12 +788,12 @@ only with `jev.allow_source_upload`.
 |---|---|---|---|---|
 | `search_rerank_results` | **on** | `search(action="semantic")`: reorders the first 30 hits (name, kind, docstring and the query are sent); `note` says when nothing fits | one per search with code hits | no |
 | `explore_rerank_results` | **on** | `explore`: reorders the first 12 hits of a question (name, kind, path, docstring and the question are sent); else the retriever's order | one per question | no |
-| `wiki_ask_filter_chunks` | **on** | `wiki ask`: keeps the relevant retrieved wiki chunks, excludes prompt injection, notes when the wiki does not cover the question | one per ask in `answer` mode; one per retrieval step in `deep` mode; none in `rag` mode | no |
+| `wiki_ask_filter_chunks` | **on** | `wiki ask`: keeps the relevant retrieved wiki chunks, excludes prompt injection, notes when the wiki does not cover the question; in `rag` mode (and without an LLM) it only excludes prompt injection, and the agent judges relevance | one per ask in `answer` and `rag` mode; one per retrieval step in `deep` mode | no |
 | `wiki_lint_flag_pairs` | **on** | `wiki lint`: the LLM contradiction pass sees only the page pairs Jev flags (page summaries are sent), or is skipped | one per lint that runs the LLM pass (`wiki.lint_llm`, off by default) | no |
 | `allow_source_upload` | off | the consent to upload source code | — | it is the consent |
 | `index_resolve_edges` | off | daemon pass after indexing: an `ambiguous` reference edge becomes a `model` edge or is deleted as external (the referencing symbol's source, its imports and the candidate definitions are sent) | up to `max_calls_per_batch` per pass | **yes**: does nothing without it |
 | `wiki_check_citations` | off | wiki builds and lint: checks each cited sentence against its cited source lines; else the identifier check only | up to `wiki_check_citations_per_page` per page | **yes**: does nothing without it |
-| `quality_triage_dead_code` | off | `quality(action="dead_code")`: labels each listed candidate `dead`, `used_dynamically` or `unsure`, dead first | one per listed candidate | no: without it only the candidate's index facts are sent; with it, also the candidate's file lines |
+| `quality_triage_dead_code` | off | `quality(action="dead_code")`: labels each listed candidate `dead`, `used_dynamically` or `unsure`, dead first | one per listed candidate, all within one `tool_deadline_s` | no: without it only the candidate's index facts are sent; with it, also the candidate's file lines |
 
 Every setting of the `jev` section:
 
@@ -775,7 +810,7 @@ Every setting of the `jev` section:
 | `index_resolve_edges` | `false` | Feature switch (bulk, sends source) | `true`, with `allow_source_upload: true` | — |
 | `wiki_check_citations` | `false` | Feature switch (bulk, sends source) | `true`, with `allow_source_upload: true` | — |
 | `quality_triage_dead_code` | `false` | Feature switch | `true` | — |
-| `tool_deadline_s` | `3.0` | Seconds a tool waits for its own Jev call (the reranks, the ask filter, the lint pairs), retries included; then it answers without Jev. The dead-code triage asks no new question after this time | `5` on a slow link | — |
+| `tool_deadline_s` | `3.0` | Seconds a tool waits for its own Jev call (the reranks, the ask filter, the lint pairs), retries included; then it answers without Jev. The dead-code triage's calls of one page share this one deadline | `5` on a slow link | — |
 | `daily_cost_cap_usd` | `1.0` | USD of paid calls per UTC day on one index; then only cached answers are served. Calls in flight hold their possible cost until they settle | `0.25`; `0` allows no paid call | — |
 | `call_timeout_s` | `30.0` | Socket timeout of one attempt of a batch-pass call, in seconds | `60` | — |
 | `max_retries_per_call` | `2` | Retries of a failed call | `0` for no retry | — |
@@ -793,6 +828,8 @@ Every setting of the `jev` section:
 | `index_resolve_edges_max_injection_score` | `0.7` | Edge resolver: source text rated above this as instructing the model is not trusted (0 to 1) | `0.5` is stricter | — |
 | `index_resolve_edges_max_candidates` | `30` | Edge resolver: definitions offered for one reference; a name with more is not asked (at least 2) | `50` | — |
 | `index_resolve_edges_audit_days` | `30` | A resolver decision that a newer one superseded is pruned after this many days (at least 1) | `90` | — |
+| `cache_retention_days` | `30` | Cached answers older than this many days are let go (the daemon prunes while idle); the spend ledger keeps their cost, and a question that comes back is paid for again (at least 1) | `90` | — |
+| `cache_max_rows` | `5000` | Cached answers kept in the index; after each index pass the least recently used beyond this many are removed, and each is asked (and paid for) again the next time its question comes. The spend ledger keeps every cost | `20000` keeps more; `0` keeps every answer | — |
 
 A number outside a setting's range is refused by `config set`, and a config file that holds one
 gets the default instead, with a warning. An environment variable wins over the file.
@@ -800,10 +837,13 @@ gets the default instead, with a warning. An environment variable wins over the 
 section among them) and adds a `jev` field that says whether Jev is active, and why not.
 
 **Limits and fallbacks:** a tool's own call ends by `tool_deadline_s` and the tool then answers
-without Jev; paid calls stop for the day at `daily_cost_cap_usd`; a batch pass stops at
-`max_calls_per_batch` or `max_input_tokens_per_batch`; after a refusal the endpoint is paused for
-`refusal_pause_s`, doubling up to `refusal_pause_max_s`, and the tools say so in their answers.
-Answers are cached by content hash in the index database, so a repeated question costs nothing; a
+without Jev; paid calls stop for the day at `daily_cost_cap_usd`; a batch pass (the edge resolver,
+the citation check of a lint or a build) stops at `max_calls_per_batch` or
+`max_input_tokens_per_batch`; after a refusal the endpoint is paused for `refusal_pause_s`, doubling
+up to `refusal_pause_max_s`, and the tools say so in their answers. A request that was sent and
+whose reply was never read (it timed out, or came after the call ended) may still be billed: the
+spend ledger books it at an estimate, and the daily cap counts it. Answers are cached by content
+hash in the index database for `cache_retention_days`, so a repeated question costs nothing; a
 cached answer replays only while the endpoint serves the model build that gave it.
 
 **Turn it off:**
@@ -866,8 +906,9 @@ Benchmarked on Windows 11 Pro, Python 3.13, AMD Ryzen processor with a codebase 
 | Context pack build | < 20ms |
 
 **Indexed scope:** git-tracked source files with `.gitignore` respected. Standard build/cache
-directories (`node_modules`, `__pycache__`, `dist`, `.venv`, …) and civyk-repoix's own `memory/`
-workspace (`memory/codebase-index`, `memory/deep-wiki`) are skipped.
+directories (`node_modules`, `__pycache__`, `dist`, `.venv`, …), civyk-repoix's own `memory/`
+workspace (`memory/codebase-index`, `memory/deep-wiki`) and the schema snapshots and journal
+that drizzle-kit writes in a `meta` directory are skipped.
 
 ______________________________________________________________________
 
