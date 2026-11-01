@@ -51,9 +51,8 @@ ______________________________________________________________________
 
 ### Installation
 
-PyPI ships compiled wheels only, for CPython 3.10, 3.11, 3.12 and 3.13 on Linux x86_64,
-Windows AMD64 and macOS arm64. There is no wheel for Python 3.14 yet, so install into a 3.10 to
-3.13 interpreter.
+PyPI ships compiled wheels only, for CPython 3.10, 3.11, 3.12 and 3.13 on Windows AMD64.
+There is no wheel for Python 3.14 yet, so install into a 3.10 to 3.13 interpreter on Windows.
 
 All extras are optional — the base install is fully functional on its own. Pick the combination for the capabilities you want:
 
