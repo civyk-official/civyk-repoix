@@ -12,7 +12,7 @@
 #   - Source is checked out from the private repo via the PRIVATE_REPO_TOKEN
 #     secret (fine-grained PAT, Contents:read only). Secrets are never exposed
 #     to forks: the only triggers are workflow_dispatch (collaborators) and
-#     repository_dispatch (token holders) - there is NO pull_request trigger.
+#     repository_dispatch (token holders) — there is NO pull_request trigger.
 #   - Logs are public but contain only build output; wheels are Nuitka-compiled
 #     machine code (no source), and the verify job enforces that no .py files
 #     leak into them. The wheels become public on PyPI anyway.
@@ -20,7 +20,7 @@
 #     verification instructions reference.
 #
 # Triggers:
-#   - workflow_dispatch: manual - give the private-repo tag to build
+#   - workflow_dispatch: manual — give the private-repo tag to build
 #   - repository_dispatch (type: release): fired by the private repo's
 #     trigger-public-release workflow on release publication
 #
@@ -132,7 +132,7 @@ jobs:
 
       # Install cibuildwheel manually (not the action) so we can pre-download
       # virtualenv.pyz and patch download() to skip if file already exists.
-      # cibuildwheel v2.22.0's download() has NO existence check - it always
+      # cibuildwheel v2.22.0's download() has NO existence check — it always
       # re-downloads, ignoring cached files. This causes persistent 429 errors.
       - name: Install cibuildwheel and pre-download virtualenv
         shell: python
@@ -286,7 +286,7 @@ jobs:
           echo "Total wheels: $(ls dist/*.whl 2>/dev/null | wc -l)"
 
       # Sign all wheels with Sigstore (free, keyless signing). Identity is THIS
-      # public workflow - matching the published verification instructions.
+      # public workflow — matching the published verification instructions.
       - name: Sign wheels with Sigstore
         uses: sigstore/gh-action-sigstore-python@v3.2.0
         with:
@@ -424,4 +424,3 @@ jobs:
           echo "  --cert-identity-regexp 'https://github.com/civyk-official/civyk-repoix/.github/workflows/publish.yml@.*' \\\\" >> $GITHUB_STEP_SUMMARY
           echo "  civyk_repoix-*.whl" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-
